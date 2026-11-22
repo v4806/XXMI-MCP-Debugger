@@ -1,0 +1,81 @@
+#pragma once
+
+#include <Windows.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+
+#include <atomic>
+#include <cstdint>
+
+#include "AdapterTypes.h"
+#include "CommandQueue.h"
+#include "MigotoSignatures.h"
+
+class MigotoAdapter {
+public:
+    void Run(const std::atomic<bool>& stopping);
+    void Shutdown();
+
+    ResolvedMigotoCapabilities Capabilities() const;
+    void* HackerDevice() const;
+    IDXGISwapChain* SwapChain() const;
+    std::uint64_t FrameCount() const;
+    AdapterSnapshot Snapshot() const;
+    bool QueueCommand(
+        std::uint32_t request_id,
+        ControlCommand command,
+        std::string& detail);
+    QueueWaitResult WaitCommand(
+        std::uint32_t request_id,
+        std::uint32_t timeout_ms,
+        CommandResult& result);
+
+#ifdef MCP_TESTING
+    void SetTestRuntime(
+        const ResolvedMigotoCapabilities& capabilities,
+        void* device);
+    void SetTestCaptureState(
+        bool device_captured,
+        bool present_hooked,
+        AdapterCaptureState state);
+    void ProcessPendingForTests();
+#endif
+
+private:
+    static void OnDeviceCreated(
+        void* context,
+        ID3D11Device* device,
+        IDXGISwapChain* swap_chain);
+    static void OnFrame(void* context, IDXGISwapChain* swap_chain);
+
+    void HandleDeviceCreated(
+        ID3D11Device* device,
+        IDXGISwapChain* swap_chain);
+    void HandleFrame(IDXGISwapChain* swap_chain);
+    void ExecutePendingCommand();
+    bool IsAdapterReady() const;
+
+    mutable SRWLOCK lock_ = SRWLOCK_INIT;
+    void* hacker_device_ = nullptr;
+    IDXGISwapChain* swap_chain_ = nullptr;
+    ResolvedMigotoCapabilities capabilities_;
+    std::atomic<std::uint64_t> frame_count_{0};
+    std::atomic<double> fps_{0.0};
+    std::atomic<double> frame_time_ms_{0.0};
+    std::atomic<std::uint64_t> start_tick_ms_{0};
+    std::atomic<std::uint64_t> last_frame_tick_ms_{0};
+    CommandQueue command_queue_;
+    std::atomic<int> capture_restore_hunting_{-1};
+    std::atomic<AdapterCaptureState> capture_state_{
+        AdapterCaptureState::NotStarted};
+    std::atomic<bool> capture_timeout_logged_{false};
+    std::atomic<bool> capture_restore_failure_logged_{false};
+    std::string process_path_;
+    std::string dll_path_;
+    std::string config_path_;
+    std::string log_path_;
+    std::string analysis_root_;
+    std::string adapter_module_sha256_;
+    bool present_hooked_ = false;
+    bool running_ = false;
+};

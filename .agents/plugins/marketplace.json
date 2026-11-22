@@ -1,0 +1,20 @@
+{
+  "name": "xxmi-mcp",
+  "interface": {
+    "displayName": "XXMI Mod Debugging"
+  },
+  "plugins": [
+    {
+      "name": "xxmi-debug",
+      "source": {
+        "source": "local",
+        "path": "./plugins/xxmi-debug"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

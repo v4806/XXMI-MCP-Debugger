@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MCPStandalone", "MCPStandalone.vcxproj", "{FA378E6A-05B1-43D3-AD84-D853810F1D6D}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MCPStandaloneTests", "Tests\MCPStandaloneTests.vcxproj", "{B9266149-7910-442B-A47E-B88EC994D095}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Zip Release|x64 = Zip Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FA378E6A-05B1-43D3-AD84-D853810F1D6D}.Debug|x64.ActiveCfg = Debug|x64
+		{FA378E6A-05B1-43D3-AD84-D853810F1D6D}.Debug|x64.Build.0 = Debug|x64
+		{FA378E6A-05B1-43D3-AD84-D853810F1D6D}.Zip Release|x64.ActiveCfg = Zip Release|x64
+		{FA378E6A-05B1-43D3-AD84-D853810F1D6D}.Zip Release|x64.Build.0 = Zip Release|x64
+		{B9266149-7910-442B-A47E-B88EC994D095}.Debug|x64.ActiveCfg = Debug|x64
+		{B9266149-7910-442B-A47E-B88EC994D095}.Debug|x64.Build.0 = Debug|x64
+		{B9266149-7910-442B-A47E-B88EC994D095}.Zip Release|x64.ActiveCfg = Zip Release|x64
+		{B9266149-7910-442B-A47E-B88EC994D095}.Zip Release|x64.Build.0 = Zip Release|x64
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "xxmi-debug": {
+      "command": "python",
+      "args": [
+        "-u",
+        "${PLUGIN_ROOT}/mcp/server.py"
+      ],
+      "cwd": "${PLUGIN_ROOT}",
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 15,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

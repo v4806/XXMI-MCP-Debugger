@@ -1,0 +1,13 @@
+interface:
+  display_name: "XXMI Mod Debugger"
+  short_description: "Debug running XXMI Mods through local MCP telemetry"
+  default_prompt: "Use $xxmi-mod-debug to inspect the running XXMI instance and recent Mod errors."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "xxmi-debug"
+      description: "Local XXMI/3DMigoto stdio MCP server"
+
+policy:
+  allow_implicit_invocation: true

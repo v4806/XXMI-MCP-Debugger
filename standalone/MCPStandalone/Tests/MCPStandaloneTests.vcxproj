@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Zip Release|x64">
+      <Configuration>Zip Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{B9266149-7910-442B-A47E-B88EC994D095}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>MCPStandaloneTests</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Zip Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(ProjectDir)x64\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Zip Release|x64'">
+    <OutDir>$(ProjectDir)x64\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;MCP_TESTING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);..\src;..\..\Nektra;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>..\..\Nektra\NktHookLib64.lib;advapi32.lib;bcrypt.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Zip Release|x64'">
+    <ClCompile>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="TestMain.cpp" />
+    <ClCompile Include="DiagnosticLogTests.cpp" />
+    <ClCompile Include="ModuleImageTests.cpp" />
+    <ClCompile Include="SignatureResolverTests.cpp" />
+    <ClCompile Include="MigotoResolverTests.cpp" />
+    <ClCompile Include="HookRuntimeTests.cpp" />
+    <ClCompile Include="MCPBridgeTests.cpp" />
+    <ClCompile Include="CommandQueueTests.cpp" />
+    <ClCompile Include="MigotoAdapterTests.cpp" />
+    <ClCompile Include="ControlDispatchTests.cpp" />
+    <ClCompile Include="HashTests.cpp" />
+    <ClCompile Include="..\src\DiagnosticLog.cpp" />
+    <ClCompile Include="..\src\CommandQueue.cpp" />
+    <ClCompile Include="..\src\HookRuntime.cpp" />
+    <ClCompile Include="..\src\MCPBridge.cpp" />
+    <ClCompile Include="..\src\Hash.cpp" />
+    <ClCompile Include="..\src\MigotoAdapter.cpp" />
+    <ClCompile Include="..\src\MigotoSignatures.cpp" />
+    <ClCompile Include="..\src\ModuleImage.cpp" />
+    <ClCompile Include="..\src\SignatureResolver.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="TestHarness.h" />
+    <ClInclude Include="TestMain.h" />
+    <ClInclude Include="..\src\DiagnosticLog.h" />
+    <ClInclude Include="..\src\AdapterTypes.h" />
+    <ClInclude Include="..\src\CommandQueue.h" />
+    <ClInclude Include="..\src\HookRuntime.h" />
+    <ClInclude Include="..\src\Hash.h" />
+    <ClInclude Include="..\src\MigotoAdapter.h" />
+    <ClInclude Include="..\src\MigotoSignatures.h" />
+    <ClInclude Include="..\src\ModuleImage.h" />
+    <ClInclude Include="..\src\SignatureResolver.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

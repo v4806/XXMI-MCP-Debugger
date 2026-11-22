@@ -1,0 +1,14 @@
+build/
+dist/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+__pycache__/
+*.py[cod]
+standalone/MCPStandalone/x64/
+standalone/MCPStandalone/obj/
+standalone/MCPStandalone/Tests/x64/
+standalone/MCPStandalone/Tests/obj/
+standalone/MCPStandalone/analysis/current.json
+standalone/MCPStandalone/analysis/test-*.json

@@ -1,0 +1,22 @@
+{
+  "name": "xxmi-debug",
+  "version": "0.1.6",
+  "description": "Codex integration for inspecting and controlling a running XXMI/3DMigoto instance through the standalone MCP bridge.",
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "requires_local_executor": true,
+  "interface": {
+    "displayName": "XXMI Mod Debugger",
+    "shortDescription": "Inspect and control running XXMI Mods",
+    "longDescription": "Connects Codex to a running XXMI/3DMigoto instance through its local named-pipe bridge for status, logs, frame-analysis review, capture requests, and config or shader reloads.",
+    "developerName": "v4806",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Inspect the running XXMI instance and recent Mod errors."
+    ]
+  }
+}
