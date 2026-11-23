@@ -941,7 +941,16 @@ TOOL_DEFINITIONS = [
                 "snapshot_path": {"type": "string"},
                 "stage": {
                     "type": "string",
-                    "enum": ["vs", "ps", "cs"],
+                    "enum": [
+                        "vs",
+                        "hs",
+                        "ds",
+                        "gs",
+                        "ps",
+                        "cs",
+                        "rt",
+                        "depth",
+                    ],
                 },
                 "slot": {"type": "integer", "minimum": 0, "maximum": 127},
                 "hash": {"type": "string"},
@@ -1029,6 +1038,24 @@ def _limit(arguments: dict[str, Any], default: int = DEFAULT_LIMIT) -> int:
         raise ToolArgumentError("limit must be an integer.")
     if not 1 <= value <= MAX_LIMIT:
         raise ToolArgumentError(f"limit must be between 1 and {MAX_LIMIT}.")
+    return value
+
+
+def _optional_int(
+    arguments: dict[str, Any],
+    name: str,
+    minimum: int,
+    maximum: int,
+) -> int | None:
+    value = arguments.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ToolArgumentError(f"{name} must be an integer.")
+    if not minimum <= value <= maximum:
+        raise ToolArgumentError(
+            f"{name} must be between {minimum} and {maximum}."
+        )
     return value
 
 
@@ -1293,6 +1320,125 @@ def _read_probe_snapshot(path_value: str) -> dict[str, Any]:
     return snapshot
 
 
+def _changed_value(before: Any, after: Any) -> dict[str, Any]:
+    return {"before": before, "after": after}
+
+
+def build_snapshot_delta(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, Any]:
+    draw_before = before.get("draw", {})
+    draw_after = after.get("draw", {})
+    if not isinstance(draw_before, dict):
+        draw_before = {}
+    if not isinstance(draw_after, dict):
+        draw_after = {}
+    draw_changes = {}
+    for key in sorted(set(draw_before) | set(draw_after)):
+        if draw_before.get(key) != draw_after.get(key):
+            draw_changes[key] = _changed_value(
+                draw_before.get(key), draw_after.get(key)
+            )
+
+    def indexed(
+        values: Any,
+        key_fields: tuple[str, ...],
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        result = {}
+        if not isinstance(values, list):
+            return result
+        for value in values:
+            if isinstance(value, dict):
+                result[tuple(value.get(field) for field in key_fields)] = value
+        return result
+
+    def changes(
+        before_values: Any,
+        after_values: Any,
+        key_fields: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        before_index = indexed(before_values, key_fields)
+        after_index = indexed(after_values, key_fields)
+        result = []
+        for key in sorted(
+            set(before_index) | set(after_index),
+            key=lambda item: tuple(str(part) for part in item),
+        ):
+            left = before_index.get(key, {})
+            right = after_index.get(key, {})
+            fields = {}
+            for field in sorted(set(left) | set(right)):
+                if field in key_fields:
+                    continue
+                if left.get(field) != right.get(field):
+                    fields[field] = _changed_value(
+                        left.get(field), right.get(field)
+                    )
+            if fields:
+                item = {
+                    field: left.get(field, right.get(field))
+                    for field in key_fields
+                }
+                item.update(fields)
+                result.append(item)
+        return result
+
+    resource_changes = changes(
+        before.get("resources", []),
+        after.get("resources", []),
+        ("stage", "slot"),
+    )
+    shader_changes = changes(
+        before.get("shaders", []),
+        after.get("shaders", []),
+        ("stage",),
+    )
+    state_changes = changes(
+        before.get("states", []),
+        after.get("states", []),
+        ("name",),
+    )
+
+    signature_changed = (
+        draw_before.get("type") != draw_after.get("type")
+    )
+    topology_before = {
+        item.get("name"): item.get("value")
+        for item in before.get("states", [])
+        if isinstance(item, dict) and item.get("name") == "ia.topology"
+    }
+    topology_after = {
+        item.get("name"): item.get("value")
+        for item in after.get("states", [])
+        if isinstance(item, dict) and item.get("name") == "ia.topology"
+    }
+    signature_changed = (
+        signature_changed
+        or topology_before != topology_after
+        or any(
+            "hash" in item for item in shader_changes
+        )
+    )
+    return {
+        "changed": bool(
+            draw_changes
+            or resource_changes
+            or shader_changes
+            or state_changes
+        ),
+        "signature_changed": signature_changed,
+        "draw": draw_changes,
+        "resources": resource_changes,
+        "shaders": shader_changes,
+        "states": state_changes,
+        "missing_fields": {
+            "before": before.get("missing_fields", []),
+            "after": after.get("missing_fields", []),
+        },
+    }
+
+
 def _tool_live_context(
     arguments: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
@@ -1340,24 +1486,180 @@ def _tool_live_draw_snapshot(
 def _tool_watch_draw_delta(
     arguments: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    raise ToolArgumentError(
-        "xxmi_watch_draw_delta is not available in this build."
+    frames = _optional_int(arguments, "frames", 2, 30)
+    if frames is None:
+        frames = 10
+    instance = _resolve_instance(arguments)
+
+    snapshots: list[dict[str, Any]] = []
+    snapshot_paths: list[str] = []
+    for _ in range(frames):
+        response = send_pipe_command(
+            instance,
+            COMMAND_LIVE_DRAW_SNAPSHOT,
+            timeout_s=LIVE_DRAW_TIMEOUT_S,
+        )
+        if response.get("error"):
+            raise XXMIError(
+                response.get("error", "LIVE_DRAW_FAILED"),
+                response.get(
+                    "error_message",
+                    "A live draw snapshot failed.",
+                ),
+            )
+        if response.get("result") != "captured":
+            raise XXMIError(
+                "LIVE_DRAW_NOT_MATCHED",
+                response.get(
+                    "result",
+                    "The live draw probe did not match a draw.",
+                ),
+            )
+        path = response.get("snapshot_path", "")
+        snapshot = _read_probe_snapshot(path)
+        snapshots.append(snapshot)
+        snapshot_paths.append(path)
+
+    deltas = []
+    signature_changed = False
+    for index in range(1, len(snapshots)):
+        delta = build_snapshot_delta(
+            snapshots[index - 1], snapshots[index]
+        )
+        signature_changed = (
+            signature_changed or delta["signature_changed"]
+        )
+        deltas.append(
+            {
+                "from": index - 1,
+                "to": index,
+                "delta": delta,
+            }
+        )
+
+    output_path = (
+        Path(snapshot_paths[0]).parent
+        / f"watch-draw-{time.time_ns()}.json"
+    )
+    payload = {
+        "kind": "watch_draw_delta",
+        "frames_requested": frames,
+        "frames_captured": len(snapshots),
+        "signature_changed": signature_changed,
+        "snapshots": snapshot_paths,
+        "deltas": deltas,
+    }
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    result = {
+        "instance_id": instance.instance_id,
+        "watch_path": str(output_path),
+        "frames_captured": len(snapshots),
+        "signature_changed": signature_changed,
+        "changed_pairs": sum(
+            1
+            for item in deltas
+            if item["delta"]["changed"]
+        ),
+        "deltas": deltas,
+    }
+    return result, (
+        f"Compared {len(snapshots)} live draw(s)"
+        + ("; draw signature changed." if signature_changed else ".")
     )
 
 
 def _tool_probe_resource(
     arguments: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    raise ToolArgumentError(
-        "xxmi_probe_resource is not available in this build."
+    snapshot = _read_probe_snapshot(
+        _required_string(arguments, "snapshot_path")
     )
+    stage = _optional_string(arguments, "stage")
+    slot = _optional_int(arguments, "slot", 0, 127)
+    hash_filter = _optional_string(arguments, "hash")
+    pointer_filter = _optional_string(arguments, "pointer")
+    include_pointers = _boolean(
+        arguments, "include_pointers", False
+    )
+
+    resources = snapshot.get("resources", [])
+    if not isinstance(resources, list):
+        resources = []
+
+    def normalized(value: Any) -> str:
+        return str(value).lower().removeprefix("0x")
+
+    selected = []
+    for resource in resources:
+        if not isinstance(resource, dict):
+            continue
+        if stage is not None and resource.get("stage") != stage:
+            continue
+        if slot is not None and resource.get("slot") != slot:
+            continue
+        if hash_filter is not None and normalized(
+            resource.get("hash", "")
+        ) != normalized(hash_filter):
+            continue
+        if pointer_filter is not None:
+            matches_pointer = any(
+                normalized(resource.get(field, ""))
+                == normalized(pointer_filter)
+                for field in (
+                    "pointer",
+                    "view_pointer",
+                    "resource_pointer",
+                )
+            )
+            if not matches_pointer:
+                continue
+        item = dict(resource)
+        if not include_pointers:
+            item.pop("pointer", None)
+            item.pop("view_pointer", None)
+            item.pop("resource_pointer", None)
+        selected.append(item)
+
+    result = {
+        "snapshot_path": arguments["snapshot_path"],
+        "count": len(selected),
+        "resources": selected,
+        "missing_fields": snapshot.get("missing_fields", []),
+    }
+    if "instance_id" in arguments:
+        result["instance_id"] = arguments["instance_id"]
+    return result, f"Matched {len(selected)} resource binding(s)."
 
 
 def _tool_override_trace(
     arguments: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    raise ToolArgumentError(
-        "xxmi_override_trace is not available in this build."
+    snapshot = _read_probe_snapshot(
+        _required_string(arguments, "snapshot_path")
+    )
+    limit = _limit(arguments)
+    draw = snapshot.get("draw", {})
+    if not isinstance(draw, dict):
+        draw = {}
+    slots = draw.get("post_command_slots", [])
+    if not isinstance(slots, list):
+        slots = []
+    result = {
+        "snapshot_path": arguments["snapshot_path"],
+        "draw": draw,
+        "post_command_slots": slots[:limit],
+        "skip": draw.get("skip"),
+        "hunting_skip": draw.get("hunting_skip"),
+        "missing_fields": snapshot.get("missing_fields", []),
+        "warnings": snapshot.get("warnings", []),
+    }
+    if "instance_id" in arguments:
+        result["instance_id"] = arguments["instance_id"]
+    return result, (
+        f"Read override trace for draw {draw.get('type', 'unknown')}."
     )
 
 

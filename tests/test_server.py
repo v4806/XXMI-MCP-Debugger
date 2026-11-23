@@ -41,6 +41,10 @@ class NativeProtocolTests(unittest.TestCase):
             }.issubset(names)
         )
 
+    def test_every_advertised_tool_has_a_handler(self):
+        for tool in server.TOOL_DEFINITIONS:
+            self.assertIn(tool["name"], server.TOOL_HANDLERS)
+
     def test_config_reload_uses_extended_native_timeout(self):
         instance = server.Instance(pid=4321, instance="a1b2c3d4")
         with (
@@ -99,6 +103,89 @@ class NativeProtocolTests(unittest.TestCase):
             [{"name": "\\mods\\test.ini\\visible", "value": 1.0}],
         )
         self.assertIn("Runtime variables captured", summary)
+
+    def test_probe_resource_filters_by_stage_and_slot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "probe.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "resources": [
+                            {
+                                "stage": "ps",
+                                "slot": 2,
+                                "hash": "01234567",
+                                "pointer": "0x000000001234",
+                            },
+                            {
+                                "stage": "vs",
+                                "slot": 2,
+                                "hash": "89abcdef",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result, _ = server._tool_probe_resource(
+                {"snapshot_path": str(path), "stage": "ps", "slot": 2}
+            )
+        self.assertEqual(
+            [item["hash"] for item in result["resources"]],
+            ["01234567"],
+        )
+        self.assertNotIn("pointer", result["resources"][0])
+
+    def test_override_trace_reports_missing_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "probe.json"
+            path.write_text(
+                json.dumps({"missing_fields": ["skip_state"]}),
+                encoding="utf-8",
+            )
+            result, _ = server._tool_override_trace(
+                {"snapshot_path": str(path)}
+            )
+        self.assertEqual(result["missing_fields"], ["skip_state"])
+
+    def test_delta_reports_changed_hashes_and_values(self):
+        before = {
+            "draw": {"index_count": 12},
+            "resources": [
+                {"stage": "ps", "slot": 1, "hash": "aa"}
+            ],
+        }
+        after = {
+            "draw": {"index_count": 24},
+            "resources": [
+                {"stage": "ps", "slot": 1, "hash": "bb"}
+            ],
+        }
+        delta = server.build_snapshot_delta(before, after)
+        self.assertEqual(
+            delta["draw"]["index_count"],
+            {"before": 12, "after": 24},
+        )
+        self.assertEqual(
+            delta["resources"][0]["hash"],
+            {"before": "aa", "after": "bb"},
+        )
+
+    def test_delta_marks_changed_draw_signatures(self):
+        before = {
+            "draw": {"type": "DrawIndexed"},
+            "shaders": [{"stage": "ps", "hash": "aa"}],
+        }
+        after = {
+            "draw": {"type": "DrawIndexed"},
+            "shaders": [{"stage": "ps", "hash": "bb"}],
+        }
+        delta = server.build_snapshot_delta(before, after)
+        self.assertTrue(delta["signature_changed"])
+
+    def test_delta_rejects_more_than_thirty_frames(self):
+        with self.assertRaises(server.ToolArgumentError):
+            server._tool_watch_draw_delta({"frames": 31})
 
     def test_status_retries_while_render_thread_is_temporarily_blocked(self):
         instance = server.Instance(pid=4321, instance="a1b2c3d4")
