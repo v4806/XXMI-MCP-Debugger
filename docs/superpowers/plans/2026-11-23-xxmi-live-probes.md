@@ -564,4 +564,3 @@ After the user starts the game, use only the MCP tools to verify:
 git add README.md plugins/xxmi-debug/skills/xxmi-mod-debug/SKILL.md plugins/xxmi-debug/.codex-plugin/plugin.json scripts/package-release.ps1
 git commit -m "docs: document live probe debugging"
 ```
-

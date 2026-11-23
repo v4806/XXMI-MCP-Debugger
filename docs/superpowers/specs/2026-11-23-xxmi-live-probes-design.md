@@ -188,4 +188,3 @@ Resource records include:
 The user explicitly requested the design and plan be written and then executed
 in this session. This instruction is treated as approval of the selected
 hybrid approach and as authorization to proceed after the plan is saved.
-

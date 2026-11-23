@@ -1568,4 +1568,3 @@ bool CaptureImmediateContext(
     };
     return InvokeCaptureImmediateContext(call);
 }
-

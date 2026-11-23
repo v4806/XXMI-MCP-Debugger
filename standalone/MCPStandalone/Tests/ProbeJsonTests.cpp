@@ -56,4 +56,3 @@ TEST_CASE(ProbeJsonWritesAndReadsSnapshotFile) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
 }
-

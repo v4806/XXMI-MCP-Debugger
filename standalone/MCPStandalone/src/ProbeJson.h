@@ -11,4 +11,3 @@ bool WriteProbeSnapshot(
     const std::filesystem::path& path,
     const LiveProbeSnapshot& snapshot,
     std::string& error);
-

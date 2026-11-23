@@ -156,4 +156,3 @@ TEST_CASE(LiveStateCaptureRetainsNewestSnapshotFiles) {
 
     std::filesystem::remove_all(directory, error);
 }
-

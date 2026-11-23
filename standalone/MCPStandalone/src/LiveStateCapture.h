@@ -28,4 +28,3 @@ bool CaptureImmediateContext(
     ID3D11Device1* device,
     LiveProbeSnapshot& snapshot,
     std::string& error);
-

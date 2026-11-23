@@ -488,4 +488,3 @@ bool WriteProbeSnapshot(
     }
     return true;
 }
-
