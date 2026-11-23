@@ -1,5 +1,6 @@
 #include "MigotoAdapter.h"
 
+#include <chrono>
 #include <cwctype>
 #include <filesystem>
 #include <optional>
@@ -10,7 +11,9 @@
 #include "DiagnosticLog.h"
 #include "Hash.h"
 #include "HookRuntime.h"
+#include "LiveStateCapture.h"
 #include "ModuleImage.h"
+#include "ProbeJson.h"
 
 namespace {
 
@@ -33,6 +36,29 @@ std::wstring ModulePath(HMODULE module) {
         return {};
     buffer.resize(length);
     return buffer;
+}
+
+std::wstring ModulePathForAddress(const void* address) {
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(address),
+            &module)) {
+        return {};
+    }
+    return ModulePath(module);
+}
+
+std::filesystem::path Utf8Path(const std::string& value) {
+    return std::filesystem::path(std::u8string(
+        reinterpret_cast<const char8_t*>(value.data()), value.size()));
+}
+
+std::string Utf8String(const std::filesystem::path& value) {
+    const auto utf8 = value.u8string();
+    return std::string(
+        reinterpret_cast<const char*>(utf8.data()), utf8.size());
 }
 
 bool IsSystemD3D11(const std::wstring& path) {
@@ -240,6 +266,23 @@ void MigotoAdapter::Run(const std::atomic<bool>& stopping) {
                             "could not hash official d3d11.dll: " +
                             hash_error);
                     }
+                    const auto mcp_path = ModulePathForAddress(
+                        reinterpret_cast<const void*>(
+                            &ModulePathForAddress));
+                    if (!mcp_path.empty()) {
+                        if (ComputeFileSha256(
+                                mcp_path,
+                                mcp_module_sha256_,
+                                hash_error)) {
+                            DiagnosticLog::Info(
+                                "mcp.dll SHA-256: " +
+                                mcp_module_sha256_);
+                        } else {
+                            DiagnosticLog::Error(
+                                "could not hash mcp.dll: " +
+                                hash_error);
+                        }
+                    }
                     capabilities_ = ResolveMigotoCapabilities(*image);
                     for (const auto& diagnostic : capabilities_.diagnostics) {
                         if (diagnostic.error)
@@ -410,14 +453,13 @@ bool MigotoAdapter::QueueCommand(
         return false;
     }
     const auto capabilities = Capabilities();
-    const bool live_probe =
-        command == ControlCommand::LiveContext ||
-        command == ControlCommand::RuntimeVariables ||
-        command == ControlCommand::LiveDrawSnapshot;
     const bool available =
-        live_probe
-            ? false
-            : command == ControlCommand::FrameAnalysis
+        command == ControlCommand::LiveContext
+            ? true
+            : command == ControlCommand::RuntimeVariables ||
+                      command == ControlCommand::LiveDrawSnapshot
+                  ? false
+                  : command == ControlCommand::FrameAnalysis
             ? capabilities.frame_analysis.available
             : command == ControlCommand::ReloadConfig
                   ? capabilities.reload_config.available &&
@@ -425,9 +467,11 @@ bool MigotoAdapter::QueueCommand(
                         capabilities.reload_config_pending_offset != 0
                   : capabilities.reload_shaders.available;
     if (!available) {
-        detail = live_probe
-                     ? "live probe capability is unavailable"
-                     : command == ControlCommand::FrameAnalysis
+        detail =
+            command == ControlCommand::RuntimeVariables ||
+                    command == ControlCommand::LiveDrawSnapshot
+                ? "live probe capability is unavailable"
+                : command == ControlCommand::FrameAnalysis
                 ? "frame_analysis internal callback was not resolved"
                 : command == ControlCommand::ReloadConfig
                       ? "reload_config pending field was not resolved "
@@ -529,6 +573,7 @@ AdapterSnapshot MigotoAdapter::Snapshot() const {
             snapshot.capabilities.emplace_back("reload_config");
         if (capabilities.reload_shaders.available)
             snapshot.capabilities.emplace_back("reload_shaders");
+        snapshot.capabilities.emplace_back("live_context");
     }
 
     snapshot.frame = frame_count_.load(std::memory_order_relaxed);
@@ -687,6 +732,109 @@ void MigotoAdapter::HandleFrame(IDXGISwapChain*) {
     frame_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
+CommandResult MigotoAdapter::CaptureLiveContextCommand(
+    std::uint32_t request_id,
+    void* hacker_device) {
+    const auto directory = ProbeSnapshotDirectory(analysis_root_);
+    if (directory.empty()) {
+        return ErrorResult(
+            4,
+            "snapshot_directory_unavailable",
+            "analysis root is unavailable");
+    }
+
+    ID3D11Device1* device = nullptr;
+    const HRESULT query = static_cast<IUnknown*>(hacker_device)
+                              ->QueryInterface(
+                                  __uuidof(ID3D11Device1),
+                                  reinterpret_cast<void**>(&device));
+    if (FAILED(query) || !device) {
+        return ErrorResult(
+            4,
+            "d3d11_device_unavailable",
+            "HackerDevice does not expose ID3D11Device1");
+    }
+
+    LiveProbeSnapshot snapshot;
+    snapshot.kind = "live_context";
+    snapshot.frame =
+        frame_count_.load(std::memory_order_relaxed) + 1;
+    snapshot.captured_unix_ms =
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    snapshot.pid = GetCurrentProcessId();
+    snapshot.d3d11_sha256 = adapter_module_sha256_;
+    snapshot.mcp_sha256 = mcp_module_sha256_;
+    snapshot.process_path = process_path_;
+    snapshot.dll_path = dll_path_;
+    snapshot.config_path = config_path_;
+    snapshot.log_path = log_path_;
+    snapshot.analysis_root = analysis_root_;
+
+    const auto current = Snapshot();
+    snapshot.hunting = current.hunting;
+    snapshot.analysis_active = current.analysis_active;
+    if (snapshot.d3d11_sha256.empty())
+        snapshot.missing_fields.emplace_back("d3d11_sha256");
+    if (snapshot.mcp_sha256.empty())
+        snapshot.missing_fields.emplace_back("mcp_sha256");
+
+    std::string capture_error;
+    const bool captured = CaptureImmediateContext(
+        device, snapshot, capture_error);
+    device->Release();
+    if (!captured) {
+        DiagnosticLog::Error(
+            "live-context capture failed: " + capture_error);
+        return ErrorResult(
+            5,
+            "live_context_capture_failed",
+            capture_error);
+    }
+
+    const auto snapshot_directory = Utf8Path(directory);
+    const auto filename =
+        "live-context-" + std::to_string(snapshot.frame) + "-" +
+        std::to_string(request_id) + ".json";
+    const auto snapshot_path =
+        snapshot_directory / Utf8Path(filename);
+    std::string write_error;
+    if (!WriteProbeSnapshot(
+            snapshot_path, snapshot, write_error)) {
+        DiagnosticLog::Error(
+            "live-context snapshot write failed: " + write_error);
+        return ErrorResult(
+            5,
+            "snapshot_write_failed",
+            write_error);
+    }
+
+    std::string retention_error;
+    if (!RetainNewestProbeSnapshots(
+            snapshot_directory, 20, retention_error)) {
+        DiagnosticLog::Warn(
+            "live-context snapshot retention failed: " +
+            retention_error);
+    }
+
+    std::ostringstream stream;
+    stream << "command=live_context\n";
+    stream << "result=captured\n";
+    stream << "snapshot_path=" << Utf8String(snapshot_path) << '\n';
+    stream << "frame=" << snapshot.frame << '\n';
+    stream << "shader_count=" << snapshot.shaders.size() << '\n';
+    stream << "resource_count=" << snapshot.resources.size() << '\n';
+    stream << "state_count=" << snapshot.states.size() << '\n';
+    stream << "missing_field_count="
+           << snapshot.missing_fields.size() << '\n';
+    stream << "limit_count=" << snapshot.limits_hit.size() << '\n';
+    if (!retention_error.empty())
+        stream << "retention_error=" << retention_error << '\n';
+    return {0, stream.str()};
+}
+
 void MigotoAdapter::ExecutePendingCommand() {
     const auto request = command_queue_.Claim();
     if (!request)
@@ -819,6 +967,19 @@ void MigotoAdapter::ExecutePendingCommand() {
                     std::to_string(exception));
             }
         }
+    } else if (request->command == ControlCommand::LiveContext) {
+        result = CaptureLiveContextCommand(
+            request->request_id, device);
+    } else if (request->command == ControlCommand::RuntimeVariables) {
+        result = ErrorResult(
+            4,
+            "runtime_variables_unavailable",
+            "runtime variable capture is not available in this build");
+    } else if (request->command == ControlCommand::LiveDrawSnapshot) {
+        result = ErrorResult(
+            4,
+            "live_draw_unavailable",
+            "live draw capture is not available in this build");
     } else if (request->command == ControlCommand::ReloadConfig) {
         if (!capabilities.reload_config.available ||
             !capabilities.globals ||

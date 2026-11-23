@@ -53,6 +53,9 @@ private:
         IDXGISwapChain* swap_chain);
     void HandleFrame(IDXGISwapChain* swap_chain);
     void ExecutePendingCommand();
+    CommandResult CaptureLiveContextCommand(
+        std::uint32_t request_id,
+        void* hacker_device);
     bool IsAdapterReady() const;
 
     mutable SRWLOCK lock_ = SRWLOCK_INIT;
@@ -76,6 +79,7 @@ private:
     std::string log_path_;
     std::string analysis_root_;
     std::string adapter_module_sha256_;
+    std::string mcp_module_sha256_;
     bool present_hooked_ = false;
     bool running_ = false;
 };

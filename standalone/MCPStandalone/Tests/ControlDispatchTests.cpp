@@ -128,6 +128,24 @@ TEST_CASE(ControlDispatchRejectsBusyQueue) {
     REQUIRE(!detail.empty());
 }
 
+TEST_CASE(ControlDispatchQueuesLiveContextAndFailsWithoutSnapshotRoot) {
+    MigotoAdapter adapter;
+    SetReadyForTests(adapter, ReloadCapabilities());
+
+    std::string detail;
+    REQUIRE(adapter.QueueCommand(
+        101, ControlCommand::LiveContext, detail));
+    adapter.ProcessPendingForTests();
+
+    CommandResult result;
+    REQUIRE(adapter.WaitCommand(101, 100, result) ==
+            QueueWaitResult::Completed);
+    REQUIRE_EQ(result.status, 4U);
+    REQUIRE(
+        result.payload.find("snapshot_directory_unavailable") !=
+        std::string::npos);
+}
+
 TEST_CASE(ControlDispatchQueuesConfigReloadThroughPendingFlag) {
     g_config_reload_calls = 0;
     AnalysisGlobals globals;

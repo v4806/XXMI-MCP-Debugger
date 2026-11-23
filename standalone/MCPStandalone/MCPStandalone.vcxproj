@@ -88,6 +88,7 @@
     <ClCompile Include="src\DiagnosticLog.cpp" />
     <ClCompile Include="src\HookRuntime.cpp" />
     <ClCompile Include="src\Hash.cpp" />
+    <ClCompile Include="src\LiveStateCapture.cpp" />
     <ClCompile Include="src\MCPBridge.cpp" />
     <ClCompile Include="src\MigotoAdapter.cpp" />
     <ClCompile Include="src\MigotoSignatures.cpp" />
@@ -101,6 +102,7 @@
     <ClInclude Include="src\CommandQueue.h" />
     <ClInclude Include="src\HookRuntime.h" />
     <ClInclude Include="src\Hash.h" />
+    <ClInclude Include="src\LiveStateCapture.h" />
     <ClInclude Include="src\MCPBridge.h" />
     <ClInclude Include="src\MigotoAdapter.h" />
     <ClInclude Include="src\MigotoSignatures.h" />
