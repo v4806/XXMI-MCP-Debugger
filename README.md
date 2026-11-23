@@ -54,6 +54,13 @@ python -m pip install -r requirements-dev.txt
 .\standalone\MCPStandalone\Tests\run_tests.ps1
 ```
 
+Set `XXMI_OFFICIAL_DLL` to test a specific official `d3d11.dll`:
+
+```powershell
+$env:XXMI_OFFICIAL_DLL = "C:\path\to\official\d3d11.dll"
+.\standalone\MCPStandalone\Tests\run_tests.ps1
+```
+
 Build the release archive:
 
 ```powershell
@@ -67,6 +74,8 @@ Build the release archive:
 3. Install or load `plugins/xxmi-debug` as a Codex local plugin.
 4. Restart the game after replacing `mcp.dll`; the DLL stays loaded until the
    process exits.
+
+Do not add an `[MCP]` section or MCP switch to `d3dx.ini`.
 
 The plugin uses the portable `${PLUGIN_ROOT}` placeholder from Codex for the
 Python server path.

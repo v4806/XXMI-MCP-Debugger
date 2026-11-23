@@ -1,8 +1,10 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <string>
 
 #include "MigotoSignatures.h"
 #include "ModuleImage.h"
@@ -65,13 +67,24 @@ TEST_CASE(MigotoResolverAmbiguityDiagnosticIncludesCandidateRvas) {
 }
 
 TEST_CASE(MigotoResolverFindsOfficialV133Anchors) {
-    constexpr wchar_t kOfficialDll[] =
-        L"D:\\Temp\\XXMI-PACKAGE-v1.3.3\\d3d11.dll";
-    if (!std::filesystem::exists(kOfficialDll))
+    std::wstring configured(32768, L'\0');
+    const auto configured_size = GetEnvironmentVariableW(
+        L"XXMI_OFFICIAL_DLL",
+        configured.data(),
+        static_cast<DWORD>(configured.size()));
+    std::filesystem::path official_dll;
+    if (configured_size != 0 && configured_size < configured.size()) {
+        configured.resize(configured_size);
+        official_dll = configured;
+    } else {
+        official_dll =
+            L"D:\\Temp\\XXMI-PACKAGE-v1.3.3\\d3d11.dll";
+    }
+    if (!std::filesystem::exists(official_dll))
         return;
 
     HMODULE module = LoadLibraryExW(
-        kOfficialDll,
+        official_dll.c_str(),
         nullptr,
         DONT_RESOLVE_DLL_REFERENCES);
     REQUIRE(module != nullptr);

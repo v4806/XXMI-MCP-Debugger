@@ -10,3 +10,4 @@
 *.lib binary
 *.dll binary
 *.pdb binary
+*.zip binary

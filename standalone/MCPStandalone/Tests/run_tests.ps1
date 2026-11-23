@@ -122,7 +122,10 @@ Invoke-Checked {
     & python -c $exportCheck $releaseDll
 } 'DLL export check'
 
-$official = 'D:\Temp\XXMI-PACKAGE-v1.3.3\d3d11.dll'
+$official = $env:XXMI_OFFICIAL_DLL
+if (-not $official) {
+    $official = 'D:\Temp\XXMI-PACKAGE-v1.3.3\d3d11.dll'
+}
 if (Test-Path -LiteralPath $official) {
     $analysis = Join-Path $root 'MCPStandalone\analysis\official-v1.3.3-signatures.json'
     Invoke-Checked {
