@@ -75,6 +75,7 @@
     <ClCompile Include="MigotoAdapterTests.cpp" />
     <ClCompile Include="ControlDispatchTests.cpp" />
     <ClCompile Include="HashTests.cpp" />
+    <ClCompile Include="ProbeJsonTests.cpp" />
     <ClCompile Include="..\src\DiagnosticLog.cpp" />
     <ClCompile Include="..\src\CommandQueue.cpp" />
     <ClCompile Include="..\src\HookRuntime.cpp" />
@@ -83,6 +84,7 @@
     <ClCompile Include="..\src\MigotoAdapter.cpp" />
     <ClCompile Include="..\src\MigotoSignatures.cpp" />
     <ClCompile Include="..\src\ModuleImage.cpp" />
+    <ClCompile Include="..\src\ProbeJson.cpp" />
     <ClCompile Include="..\src\SignatureResolver.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -96,6 +98,8 @@
     <ClInclude Include="..\src\MigotoAdapter.h" />
     <ClInclude Include="..\src\MigotoSignatures.h" />
     <ClInclude Include="..\src\ModuleImage.h" />
+    <ClInclude Include="..\src\ProbeJson.h" />
+    <ClInclude Include="..\src\ProbeTypes.h" />
     <ClInclude Include="..\src\SignatureResolver.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
