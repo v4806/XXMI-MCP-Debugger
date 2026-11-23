@@ -94,7 +94,7 @@ private:
     std::string adapter_module_sha256_;
     std::string mcp_module_sha256_;
     NativeBeforeDrawHook before_draw_hook_;
-    std::unique_ptr<BeforeDrawProbeController> draw_probe_;
+    BeforeDrawProbeController* draw_probe_ = nullptr;
     ID3D11Device1* draw_probe_device_ = nullptr;
     ID3D11DeviceContext1* draw_probe_context_ = nullptr;
     std::uint32_t draw_probe_request_id_ = 0;

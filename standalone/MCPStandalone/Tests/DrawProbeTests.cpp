@@ -1,4 +1,5 @@
 #include <string>
+#include <stdexcept>
 
 #include "DrawProbe.h"
 #include "TestHarness.h"
@@ -42,6 +43,7 @@ public:
         if (!installed_ || !callback_)
             return;
         callback_(callback_context_, context, draw, false);
+        original_called_ = true;
         callback_(callback_context_, context, draw, true);
     }
 
@@ -57,13 +59,32 @@ public:
         return !installed_;
     }
 
+    bool original_called() const {
+        return original_called_;
+    }
+
 private:
     void* target_ = nullptr;
     Callback callback_ = nullptr;
     void* callback_context_ = nullptr;
     bool installed_ = false;
+    bool original_called_ = false;
     int active_calls_ = 0;
 };
+
+bool CaptureAfterOriginal(
+    void* context,
+    LiveProbeSnapshot&,
+    std::string&) {
+    return static_cast<FakeBeforeDrawHook*>(context)->original_called();
+}
+
+bool ThrowDuringCapture(
+    void*,
+    LiveProbeSnapshot&,
+    std::string&) {
+    throw std::runtime_error("synthetic capture failure");
+}
 
 }  // namespace
 
@@ -146,4 +167,34 @@ TEST_CASE(BeforeDrawProbeManualRemoveMarksNotMatched) {
         error));
     REQUIRE(probe.TryRemoveHook(error));
     REQUIRE(probe.State() == DrawProbeState::NotMatched);
+}
+
+TEST_CASE(BeforeDrawProbeCapturesPipelineAfterOriginalProcessing) {
+    FakeBeforeDrawHook hook;
+    BeforeDrawProbeController probe(
+        hook, &CaptureAfterOriginal, &hook);
+    std::string error;
+
+    REQUIRE(probe.Arm(
+        hook.Original(),
+        reinterpret_cast<void*>(0x2000),
+        10,
+        error));
+    hook.Invoke(reinterpret_cast<void*>(0x2000), nullptr);
+    REQUIRE(probe.State() == DrawProbeState::Captured);
+}
+
+TEST_CASE(BeforeDrawProbeContainsCaptureExceptions) {
+    FakeBeforeDrawHook hook;
+    BeforeDrawProbeController probe(
+        hook, &ThrowDuringCapture);
+    std::string error;
+
+    REQUIRE(probe.Arm(
+        hook.Original(),
+        reinterpret_cast<void*>(0x2000),
+        10,
+        error));
+    hook.Invoke(reinterpret_cast<void*>(0x2000), nullptr);
+    REQUIRE(probe.State() == DrawProbeState::Failed);
 }

@@ -413,7 +413,8 @@ void MigotoAdapter::Shutdown() {
     if (draw_probe_) {
         std::string cleanup_error;
         if (draw_probe_->TryRemoveHook(cleanup_error)) {
-            draw_probe_.reset();
+            auto* completed_probe = draw_probe_;
+            draw_probe_ = nullptr;
             if (draw_probe_context_) {
                 draw_probe_context_->Release();
                 draw_probe_context_ = nullptr;
@@ -422,6 +423,7 @@ void MigotoAdapter::Shutdown() {
                 draw_probe_device_->Release();
                 draw_probe_device_ = nullptr;
             }
+            delete completed_probe;
             draw_probe_active_.store(false, std::memory_order_release);
         } else {
             DiagnosticLog::Error(
@@ -540,12 +542,6 @@ void MigotoAdapter::SetTestCaptureState(
 }
 
 void MigotoAdapter::ProcessPendingForTests() {
-    ProcessDrawProbeAtPresent(
-        static_cast<std::uint32_t>(
-            frame_count_.load(std::memory_order_relaxed)));
-    ProcessDrawProbeAtPresent(
-        static_cast<std::uint32_t>(
-            frame_count_.load(std::memory_order_relaxed)));
     ExecutePendingCommand();
 }
 #endif
@@ -755,6 +751,9 @@ void MigotoAdapter::HandleFrame(IDXGISwapChain*) {
         }
     }
 
+    ProcessDrawProbeAtPresent(
+        static_cast<std::uint32_t>(
+            frame_count_.load(std::memory_order_relaxed)));
     ExecutePendingCommand();
     const auto now = GetTickCount64();
     const auto previous =
@@ -1070,7 +1069,7 @@ bool MigotoAdapter::StartLiveDrawProbe(
     draw_probe_device_ = device;
     draw_probe_context_ = context;
     draw_probe_request_id_ = request_id;
-    draw_probe_ = std::move(probe);
+    draw_probe_ = probe.release();
     draw_probe_active_.store(true, std::memory_order_release);
     live_draw_available_.store(true, std::memory_order_release);
     return true;
@@ -1159,7 +1158,8 @@ void MigotoAdapter::ProcessDrawProbeAtPresent(
     }
 
     command_queue_.Complete(result);
-    draw_probe_.reset();
+    auto* completed_probe = draw_probe_;
+    draw_probe_ = nullptr;
     if (draw_probe_context_) {
         draw_probe_context_->Release();
         draw_probe_context_ = nullptr;
@@ -1168,6 +1168,7 @@ void MigotoAdapter::ProcessDrawProbeAtPresent(
         draw_probe_device_->Release();
         draw_probe_device_ = nullptr;
     }
+    delete completed_probe;
     draw_probe_request_id_ = 0;
     draw_probe_active_.store(false, std::memory_order_release);
 }

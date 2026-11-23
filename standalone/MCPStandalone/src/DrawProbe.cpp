@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -18,11 +19,33 @@ namespace {
 constexpr std::array<std::size_t, 7> kDrawVtableSlots = {
     13,  // Draw
     12,  // DrawIndexed
-    19,  // DrawInstanced
-    18,  // DrawIndexedInstanced
-    36,  // DrawAuto
-    37,  // DrawIndexedInstancedIndirect
-    38,  // DrawInstancedIndirect
+    21,  // DrawInstanced
+    20,  // DrawIndexedInstanced
+    38,  // DrawAuto
+    39,  // DrawIndexedInstancedIndirect
+    40,  // DrawInstancedIndirect
+};
+
+constexpr std::array<std::uint8_t, 64> kBeforeDrawPattern = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57,
+    0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+    0x48, 0x8D, 0x6C, 0x24, 0xD9, 0x48, 0x81, 0xEC,
+    0x00, 0x00, 0x00, 0x00, 0x4C, 0x8B, 0xFA, 0x48,
+    0x8B, 0xF1, 0xFF, 0x81, 0x00, 0x00, 0x00, 0x00,
+    0x83, 0x3D, 0x00, 0x00, 0x00, 0x00, 0x01, 0x75,
+    0x0A, 0x48, 0x8D, 0x4D, 0xC7, 0xFF, 0x15, 0x00,
+    0x00, 0x00, 0x00, 0x48, 0x8B, 0x05, 0xEE, 0xC8,
+};
+
+constexpr std::array<std::uint8_t, 64> kBeforeDrawMask = {
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+    0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+    0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 };
 
 struct ProbeDrawCallInfo {
@@ -217,6 +240,51 @@ ReadFunctionCalls(
     return calls;
 }
 
+bool FindBeforeDrawSignature(
+    const ModuleImage& official_module,
+    std::uintptr_t& target,
+    std::string& detail) {
+    const auto text = official_module.Section(".text");
+    if (!text) {
+        detail = "official module has no .text section";
+        return false;
+    }
+    if (kBeforeDrawPattern.size() > text->bytes.size()) {
+        detail = "official .text section is too small";
+        return false;
+    }
+
+    std::size_t matches = 0;
+    for (std::size_t offset = 0;
+         offset + kBeforeDrawPattern.size() <= text->bytes.size();
+         ++offset) {
+        bool match = true;
+        for (std::size_t index = 0;
+             index < kBeforeDrawPattern.size();
+             ++index) {
+            if ((kBeforeDrawMask[index] & text->bytes[offset + index]) !=
+                (kBeforeDrawMask[index] & kBeforeDrawPattern[index])) {
+                match = false;
+                break;
+            }
+        }
+        if (!match)
+            continue;
+        ++matches;
+        target = text->address + offset;
+    }
+    if (matches == 1) {
+        detail = "BeforeDraw signature matched at " +
+                 PointerString(
+                     reinterpret_cast<void*>(target));
+        return true;
+    }
+    detail = matches == 0
+                 ? "BeforeDraw signature was not found"
+                 : "BeforeDraw signature was ambiguous";
+    return false;
+}
+
 struct NativeHookState {
     SRWLOCK lock = SRWLOCK_INIT;
     CNktHookLib hook_library;
@@ -256,12 +324,22 @@ void HookedNativeBeforeDraw(
     const auto callback_context = state.callback_context;
     const auto original = reinterpret_cast<BeforeDrawFn>(
         state.original);
-    if (callback)
-        callback(callback_context, hacker_context, draw_context, false);
+    if (callback) {
+        try {
+            callback(
+                callback_context, hacker_context, draw_context, false);
+        } catch (...) {
+        }
+    }
     if (original)
         original(hacker_context, draw_context);
-    if (callback)
-        callback(callback_context, hacker_context, draw_context, true);
+    if (callback) {
+        try {
+            callback(
+                callback_context, hacker_context, draw_context, true);
+        } catch (...) {
+        }
+    }
     ReleaseSRWLockShared(&state.lock);
 }
 
@@ -336,8 +414,18 @@ void BeforeDrawProbeController::HookCallback(
     void* hacker_context,
     void* draw_context,
     bool after_original) {
-    static_cast<BeforeDrawProbeController*>(callback_context)
-        ->HandleHook(hacker_context, draw_context, after_original);
+    auto* controller =
+        static_cast<BeforeDrawProbeController*>(callback_context);
+    try {
+        controller->HandleHook(
+            hacker_context, draw_context, after_original);
+    } catch (const std::exception& exception) {
+        controller->error_ = exception.what();
+        controller->state_ = DrawProbeState::Failed;
+    } catch (...) {
+        controller->error_ = "BeforeDraw probe raised an unknown exception";
+        controller->state_ = DrawProbeState::Failed;
+    }
 }
 
 void BeforeDrawProbeController::HandleHook(
@@ -355,12 +443,6 @@ void BeforeDrawProbeController::HandleHook(
         } else {
             FillDrawInfo(snapshot_, context);
         }
-        if (capture_callback_ &&
-            !capture_callback_(
-                capture_context_, snapshot_, error_)) {
-            state_ = DrawProbeState::Failed;
-            return;
-        }
         state_ = DrawProbeState::Capturing;
         return;
     }
@@ -369,6 +451,12 @@ void BeforeDrawProbeController::HandleHook(
         state_ != DrawProbeState::Failed) {
         return;
     }
+    if (capture_callback_ &&
+        !capture_callback_(
+            capture_context_, snapshot_, error_)) {
+        state_ = DrawProbeState::Failed;
+    }
+
     ProbeDrawContext context;
     if (ReadDrawContext(draw_context, context)) {
         FillDrawResult(snapshot_, context);
@@ -539,6 +627,11 @@ bool ResolveBeforeDrawTarget(
         return false;
     }
 
+    std::uintptr_t signature_target = 0;
+    std::string signature_detail;
+    const bool signature_found = FindBeforeDrawSignature(
+        official_module, signature_target, signature_detail);
+
     const auto ranges = official_module.FunctionRanges();
     const auto find_range = [&ranges](std::uintptr_t address)
         -> std::optional<FunctionRange> {
@@ -602,11 +695,33 @@ bool ResolveBeforeDrawTarget(
                 return left.occurrences > right.occurrences;
             return left.earliest_offset < right.earliest_offset;
         });
+    if (signature_found) {
+        if (!official_module.IsFunctionStart(signature_target)) {
+            detail = signature_detail +
+                     "; signature target is not a .pdata function start";
+            return false;
+        }
+        target = reinterpret_cast<void*>(signature_target);
+        std::ostringstream stream;
+        stream << signature_detail
+               << "; validated_draw_functions="
+               << validated_functions;
+        if (!ordered.empty()) {
+            stream << " vtable_candidate="
+                   << PointerString(
+                          reinterpret_cast<void*>(
+                              ordered.front().target));
+        }
+        detail = stream.str();
+        return true;
+    }
+
     if (ordered.empty()) {
         std::ostringstream stream;
         stream << "no shared direct BeforeDraw call target found; "
                << "validated_draw_functions=" << validated_functions
-               << " candidate_count=" << candidates.size();
+               << " candidate_count=" << candidates.size()
+               << " signature=" << signature_detail;
         detail = stream.str();
         return false;
     }
