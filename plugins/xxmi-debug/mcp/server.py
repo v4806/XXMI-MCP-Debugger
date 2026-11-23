@@ -25,6 +25,20 @@ COMMAND_FRAME_ANALYSIS = 2
 COMMAND_RELOAD_CONFIG = 3
 COMMAND_RELOAD_SHADERS = 4
 COMMAND_PING = 5
+COMMAND_LIVE_CONTEXT = 6
+COMMAND_RUNTIME_VARIABLES = 7
+COMMAND_LIVE_DRAW_SNAPSHOT = 8
+
+SUPPORTED_COMMANDS = {
+    COMMAND_STATUS,
+    COMMAND_FRAME_ANALYSIS,
+    COMMAND_RELOAD_CONFIG,
+    COMMAND_RELOAD_SHADERS,
+    COMMAND_PING,
+    COMMAND_LIVE_CONTEXT,
+    COMMAND_RUNTIME_VARIABLES,
+    COMMAND_LIVE_DRAW_SNAPSHOT,
+}
 
 PIPE_PREFIX = "xxmi-mcp-v1-"
 PIPE_PREFIX_PATH = "\\\\.\\pipe\\" + PIPE_PREFIX
@@ -32,6 +46,7 @@ PIPE_PATTERN = re.compile(r"^" + re.escape(PIPE_PREFIX) + r"(\d+)-([0-9a-fA-F]{8
 
 DEFAULT_TIMEOUT_S = 2.0
 RELOAD_CONFIG_TIMEOUT_S = 10.0
+LIVE_DRAW_TIMEOUT_S = 5.0
 STATUS_RETRY_TIMEOUT_S = 10.0
 STATUS_RETRY_DELAY_S = 0.1
 DEFAULT_LIMIT = 100
@@ -439,13 +454,7 @@ def send_pipe_command(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     request_id: int | None = None,
 ) -> dict[str, str]:
-    if command not in {
-        COMMAND_STATUS,
-        COMMAND_FRAME_ANALYSIS,
-        COMMAND_RELOAD_CONFIG,
-        COMMAND_RELOAD_SHADERS,
-        COMMAND_PING,
-    }:
+    if command not in SUPPORTED_COMMANDS:
         raise ToolArgumentError(f"Unsupported native command {command}.")
     if payload:
         raise ToolArgumentError("Native commands require an empty payload.")
@@ -843,6 +852,130 @@ TOOL_DEFINITIONS = [
             "openWorldHint": False,
         },
     },
+    {
+        "name": "xxmi_live_context",
+        "title": "Capture Live D3D11 Context",
+        "description": "Capture the current immediate D3D11 pipeline and resource bindings into a bounded JSON snapshot.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instance_id": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "xxmi_runtime_variables",
+        "title": "Read Mod Runtime Variables",
+        "description": "Read live Mod state plus bounded d3dx.ini and d3dx_user.ini variables.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instance_id": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": True,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "xxmi_live_draw_snapshot",
+        "title": "Capture One Live Draw",
+        "description": "Capture metadata for the next immediate-context draw and restore normal drawing immediately.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instance_id": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "xxmi_watch_draw_delta",
+        "title": "Compare Live Draws",
+        "description": "Capture a bounded sequence of live draws and return only values that changed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instance_id": {"type": "string"},
+                "frames": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 30,
+                    "default": 10,
+                },
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "xxmi_probe_resource",
+        "title": "Probe Captured Resource",
+        "description": "Filter resources in a saved live snapshot by stage, slot, hash, or pointer.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instance_id": {"type": "string"},
+                "snapshot_path": {"type": "string"},
+                "stage": {
+                    "type": "string",
+                    "enum": ["vs", "ps", "cs"],
+                },
+                "slot": {"type": "integer", "minimum": 0, "maximum": 127},
+                "hash": {"type": "string"},
+                "pointer": {"type": "string"},
+                "include_pointers": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": True,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "xxmi_override_trace",
+        "title": "Read Live Override Trace",
+        "description": "Return observed override, post-command, and skip data from the latest live draw snapshot.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instance_id": {"type": "string"},
+                "snapshot_path": {"type": "string"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIMIT,
+                    "default": DEFAULT_LIMIT,
+                },
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": True,
+            "openWorldHint": False,
+        },
+    },
 ]
 TOOLS_BY_NAME = {tool["name"]: tool for tool in TOOL_DEFINITIONS}
 
@@ -1102,6 +1235,85 @@ def _tool_reload(arguments: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return response, summary
 
 
+def _run_live_probe_command(
+    arguments: dict[str, Any],
+    command: int,
+    label: str,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> tuple[dict[str, Any], str]:
+    instance = _resolve_instance(arguments)
+    response = _with_instance_metadata(
+        instance,
+        send_pipe_command(instance, command, timeout_s=timeout_s),
+    )
+    if response.get("error"):
+        raise XXMIError(
+            response.get("error", "LIVE_PROBE_FAILED"),
+            response.get("error_message", f"{label} failed."),
+        )
+    result = response.get("result", "captured")
+    snapshot_path = response.get("snapshot_path", "")
+    summary = f"{label} {result}"
+    if snapshot_path:
+        summary += f": {snapshot_path}"
+    return response, summary + "."
+
+
+def _tool_live_context(
+    arguments: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    return _run_live_probe_command(
+        arguments,
+        COMMAND_LIVE_CONTEXT,
+        "Live context",
+    )
+
+
+def _tool_runtime_variables(
+    arguments: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    return _run_live_probe_command(
+        arguments,
+        COMMAND_RUNTIME_VARIABLES,
+        "Runtime variables",
+    )
+
+
+def _tool_live_draw_snapshot(
+    arguments: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    return _run_live_probe_command(
+        arguments,
+        COMMAND_LIVE_DRAW_SNAPSHOT,
+        "Live draw snapshot",
+        timeout_s=LIVE_DRAW_TIMEOUT_S,
+    )
+
+
+def _tool_watch_draw_delta(
+    arguments: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    raise ToolArgumentError(
+        "xxmi_watch_draw_delta is not available in this build."
+    )
+
+
+def _tool_probe_resource(
+    arguments: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    raise ToolArgumentError(
+        "xxmi_probe_resource is not available in this build."
+    )
+
+
+def _tool_override_trace(
+    arguments: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    raise ToolArgumentError(
+        "xxmi_override_trace is not available in this build."
+    )
+
+
 TOOL_HANDLERS = {
     "xxmi_list_instances": _tool_list_instances,
     "xxmi_status": _tool_status,
@@ -1110,6 +1322,12 @@ TOOL_HANDLERS = {
     "xxmi_read_frame_analysis": _tool_read_frame_analysis,
     "xxmi_trigger_frame_capture": _tool_trigger_frame_capture,
     "xxmi_reload": _tool_reload,
+    "xxmi_live_context": _tool_live_context,
+    "xxmi_runtime_variables": _tool_runtime_variables,
+    "xxmi_live_draw_snapshot": _tool_live_draw_snapshot,
+    "xxmi_watch_draw_delta": _tool_watch_draw_delta,
+    "xxmi_probe_resource": _tool_probe_resource,
+    "xxmi_override_trace": _tool_override_trace,
 }
 
 

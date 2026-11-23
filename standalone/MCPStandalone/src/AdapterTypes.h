@@ -78,6 +78,9 @@ enum class ControlCommand : std::uint16_t {
     FrameAnalysis = 2,
     ReloadConfig = 3,
     ReloadShaders = 4,
+    LiveContext = 5,
+    RuntimeVariables = 6,
+    LiveDrawSnapshot = 7,
 };
 
 struct CommandResult {

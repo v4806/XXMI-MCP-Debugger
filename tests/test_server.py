@@ -16,6 +16,30 @@ from mock_pipe import MockPipeServer  # noqa: E402
 
 
 class NativeProtocolTests(unittest.TestCase):
+    def test_live_probe_commands_are_whitelisted(self):
+        self.assertIn(server.COMMAND_LIVE_CONTEXT, server.SUPPORTED_COMMANDS)
+        self.assertIn(
+            server.COMMAND_RUNTIME_VARIABLES,
+            server.SUPPORTED_COMMANDS,
+        )
+        self.assertIn(
+            server.COMMAND_LIVE_DRAW_SNAPSHOT,
+            server.SUPPORTED_COMMANDS,
+        )
+
+    def test_live_probe_tools_expose_expected_names(self):
+        names = {tool["name"] for tool in server.TOOL_DEFINITIONS}
+        self.assertTrue(
+            {
+                "xxmi_live_context",
+                "xxmi_runtime_variables",
+                "xxmi_live_draw_snapshot",
+                "xxmi_watch_draw_delta",
+                "xxmi_probe_resource",
+                "xxmi_override_trace",
+            }.issubset(names)
+        )
+
     def test_config_reload_uses_extended_native_timeout(self):
         instance = server.Instance(pid=4321, instance="a1b2c3d4")
         with (

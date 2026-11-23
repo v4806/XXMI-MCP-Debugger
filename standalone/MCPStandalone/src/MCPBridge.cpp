@@ -34,6 +34,9 @@ enum class Command : std::uint16_t {
     ReloadConfig = 3,
     ReloadShaders = 4,
     Ping = 5,
+    LiveContext = 6,
+    RuntimeVariables = 7,
+    LiveDrawSnapshot = 8,
 };
 
 enum Status : std::uint32_t {
@@ -310,6 +313,12 @@ std::optional<ControlCommand> ToControlCommand(std::uint16_t command) {
         return ControlCommand::ReloadConfig;
     case static_cast<std::uint16_t>(Command::ReloadShaders):
         return ControlCommand::ReloadShaders;
+    case static_cast<std::uint16_t>(Command::LiveContext):
+        return ControlCommand::LiveContext;
+    case static_cast<std::uint16_t>(Command::RuntimeVariables):
+        return ControlCommand::RuntimeVariables;
+    case static_cast<std::uint16_t>(Command::LiveDrawSnapshot):
+        return ControlCommand::LiveDrawSnapshot;
     default:
         return std::nullopt;
     }
@@ -380,7 +389,10 @@ void HandleClient(HANDLE pipe) {
         return;
     case Command::FrameAnalysis:
     case Command::ReloadConfig:
-    case Command::ReloadShaders: {
+    case Command::ReloadShaders:
+    case Command::LiveContext:
+    case Command::RuntimeVariables:
+    case Command::LiveDrawSnapshot: {
         const auto control = ToControlCommand(request.command);
         if (!control || !g_adapter) {
             DiagnosticLog::Error(
@@ -555,10 +567,11 @@ void MCP_Start(MigotoAdapter* adapter) {
 }
 
 std::uint32_t MCP_RenderWaitMsForCommand(std::uint16_t command) {
-    return command ==
-                   static_cast<std::uint16_t>(Command::ReloadConfig)
-               ? kConfigReloadWaitMs
-               : kRenderWaitMs;
+    if (command == static_cast<std::uint16_t>(Command::ReloadConfig))
+        return kConfigReloadWaitMs;
+    if (command == static_cast<std::uint16_t>(Command::LiveDrawSnapshot))
+        return 3000;
+    return kRenderWaitMs;
 }
 
 bool MCP_Stop(std::uint32_t timeout_ms) {

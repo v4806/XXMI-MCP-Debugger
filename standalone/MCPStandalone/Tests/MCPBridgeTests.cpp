@@ -67,3 +67,9 @@ TEST_CASE(MCPBridgeUsesLongerRenderWaitForConfigReload) {
     REQUIRE_EQ(MCP_RenderWaitMsForCommand(3), 8000U);
     REQUIRE_EQ(MCP_RenderWaitMsForCommand(4), 1500U);
 }
+
+TEST_CASE(MCPBridgeUsesBoundedLiveProbeTimeouts) {
+    REQUIRE_EQ(MCP_RenderWaitMsForCommand(6), 1500U);
+    REQUIRE_EQ(MCP_RenderWaitMsForCommand(7), 1500U);
+    REQUIRE_EQ(MCP_RenderWaitMsForCommand(8), 3000U);
+}

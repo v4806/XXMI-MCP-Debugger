@@ -410,8 +410,14 @@ bool MigotoAdapter::QueueCommand(
         return false;
     }
     const auto capabilities = Capabilities();
+    const bool live_probe =
+        command == ControlCommand::LiveContext ||
+        command == ControlCommand::RuntimeVariables ||
+        command == ControlCommand::LiveDrawSnapshot;
     const bool available =
-        command == ControlCommand::FrameAnalysis
+        live_probe
+            ? false
+            : command == ControlCommand::FrameAnalysis
             ? capabilities.frame_analysis.available
             : command == ControlCommand::ReloadConfig
                   ? capabilities.reload_config.available &&
@@ -419,8 +425,9 @@ bool MigotoAdapter::QueueCommand(
                         capabilities.reload_config_pending_offset != 0
                   : capabilities.reload_shaders.available;
     if (!available) {
-        detail =
-            command == ControlCommand::FrameAnalysis
+        detail = live_probe
+                     ? "live probe capability is unavailable"
+                     : command == ControlCommand::FrameAnalysis
                 ? "frame_analysis internal callback was not resolved"
                 : command == ControlCommand::ReloadConfig
                       ? "reload_config pending field was not resolved "
