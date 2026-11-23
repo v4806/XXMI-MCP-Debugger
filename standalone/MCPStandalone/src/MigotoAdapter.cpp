@@ -14,6 +14,7 @@
 #include "LiveStateCapture.h"
 #include "ModuleImage.h"
 #include "ProbeJson.h"
+#include "RuntimeVariables.h"
 
 namespace {
 
@@ -454,10 +455,10 @@ bool MigotoAdapter::QueueCommand(
     }
     const auto capabilities = Capabilities();
     const bool available =
-        command == ControlCommand::LiveContext
+        command == ControlCommand::LiveContext ||
+                command == ControlCommand::RuntimeVariables
             ? true
-            : command == ControlCommand::RuntimeVariables ||
-                      command == ControlCommand::LiveDrawSnapshot
+            : command == ControlCommand::LiveDrawSnapshot
                   ? false
                   : command == ControlCommand::FrameAnalysis
             ? capabilities.frame_analysis.available
@@ -468,8 +469,7 @@ bool MigotoAdapter::QueueCommand(
                   : capabilities.reload_shaders.available;
     if (!available) {
         detail =
-            command == ControlCommand::RuntimeVariables ||
-                    command == ControlCommand::LiveDrawSnapshot
+            command == ControlCommand::LiveDrawSnapshot
                 ? "live probe capability is unavailable"
                 : command == ControlCommand::FrameAnalysis
                 ? "frame_analysis internal callback was not resolved"
@@ -574,6 +574,7 @@ AdapterSnapshot MigotoAdapter::Snapshot() const {
         if (capabilities.reload_shaders.available)
             snapshot.capabilities.emplace_back("reload_shaders");
         snapshot.capabilities.emplace_back("live_context");
+        snapshot.capabilities.emplace_back("runtime_variables");
     }
 
     snapshot.frame = frame_count_.load(std::memory_order_relaxed);
@@ -835,6 +836,93 @@ CommandResult MigotoAdapter::CaptureLiveContextCommand(
     return {0, stream.str()};
 }
 
+CommandResult MigotoAdapter::CaptureRuntimeVariablesCommand(
+    std::uint32_t request_id) {
+    if (analysis_root_.empty()) {
+        return ErrorResult(
+            4,
+            "runtime_variables_unavailable",
+            "analysis root is unavailable");
+    }
+
+    RuntimeConfigSnapshot snapshot;
+    std::string read_error;
+    if (!ReadRuntimeConfig(
+            Utf8Path(analysis_root_), snapshot, read_error)) {
+        return ErrorResult(
+            5,
+            "runtime_variables_read_failed",
+            read_error);
+    }
+
+    snapshot.frame =
+        frame_count_.load(std::memory_order_relaxed) + 1;
+    snapshot.captured_unix_ms =
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    snapshot.pid = GetCurrentProcessId();
+    snapshot.d3d11_sha256 = adapter_module_sha256_;
+    snapshot.mcp_sha256 = mcp_module_sha256_;
+    snapshot.process_path = process_path_;
+    snapshot.dll_path = dll_path_;
+    const auto current = Snapshot();
+    snapshot.hunting = current.hunting;
+    snapshot.analysis_active = current.analysis_active;
+    if (snapshot.d3d11_sha256.empty())
+        snapshot.missing_fields.emplace_back("d3d11_sha256");
+    if (snapshot.mcp_sha256.empty())
+        snapshot.missing_fields.emplace_back("mcp_sha256");
+
+    const auto directory = ProbeSnapshotDirectory(analysis_root_);
+    if (directory.empty()) {
+        return ErrorResult(
+            4,
+            "snapshot_directory_unavailable",
+            "analysis root is unavailable");
+    }
+    const auto snapshot_directory = Utf8Path(directory);
+    const auto filename =
+        "runtime-variables-" + std::to_string(snapshot.frame) + "-" +
+        std::to_string(request_id) + ".json";
+    const auto snapshot_path =
+        snapshot_directory / Utf8Path(filename);
+    std::string write_error;
+    if (!WriteRuntimeVariables(
+            snapshot_path, snapshot, write_error)) {
+        DiagnosticLog::Error(
+            "runtime-variables snapshot write failed: " +
+            write_error);
+        return ErrorResult(
+            5,
+            "snapshot_write_failed",
+            write_error);
+    }
+
+    std::string retention_error;
+    if (!RetainNewestProbeSnapshots(
+            snapshot_directory, 20, retention_error)) {
+        DiagnosticLog::Warn(
+            "runtime-variables snapshot retention failed: " +
+            retention_error);
+    }
+
+    std::ostringstream stream;
+    stream << "command=runtime_variables\n";
+    stream << "result=captured\n";
+    stream << "snapshot_path=" << Utf8String(snapshot_path) << '\n';
+    stream << "frame=" << snapshot.frame << '\n';
+    stream << "persistent_value_count="
+           << snapshot.persistent_values.size() << '\n';
+    stream << "unknown_setting_count="
+           << snapshot.log_summary.unknown_setting_count << '\n';
+    stream << "warning_count=" << snapshot.warnings.size() << '\n';
+    if (!retention_error.empty())
+        stream << "retention_error=" << retention_error << '\n';
+    return {0, stream.str()};
+}
+
 void MigotoAdapter::ExecutePendingCommand() {
     const auto request = command_queue_.Claim();
     if (!request)
@@ -971,10 +1059,8 @@ void MigotoAdapter::ExecutePendingCommand() {
         result = CaptureLiveContextCommand(
             request->request_id, device);
     } else if (request->command == ControlCommand::RuntimeVariables) {
-        result = ErrorResult(
-            4,
-            "runtime_variables_unavailable",
-            "runtime variable capture is not available in this build");
+        result = CaptureRuntimeVariablesCommand(
+            request->request_id);
     } else if (request->command == ControlCommand::LiveDrawSnapshot) {
         result = ErrorResult(
             4,

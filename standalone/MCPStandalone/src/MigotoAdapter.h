@@ -56,6 +56,8 @@ private:
     CommandResult CaptureLiveContextCommand(
         std::uint32_t request_id,
         void* hacker_device);
+    CommandResult CaptureRuntimeVariablesCommand(
+        std::uint32_t request_id);
     bool IsAdapterReady() const;
 
     mutable SRWLOCK lock_ = SRWLOCK_INIT;

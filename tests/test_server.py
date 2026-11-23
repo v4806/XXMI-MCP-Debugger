@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -59,6 +60,45 @@ class NativeProtocolTests(unittest.TestCase):
             server.COMMAND_RELOAD_CONFIG,
             timeout_s=server.RELOAD_CONFIG_TIMEOUT_S,
         )
+
+    def test_runtime_variables_tool_returns_small_snapshot_values(self):
+        instance = server.Instance(pid=4321, instance="a1b2c3d4")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "runtime-variables.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "persistent_values": [
+                            {"name": "\\mods\\test.ini\\visible", "value": 1.0}
+                        ],
+                        "unknown_setting_count": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(
+                    server, "_resolve_instance", return_value=instance
+                ),
+                patch.object(
+                    server,
+                    "send_pipe_command",
+                    return_value={
+                        "command": "runtime_variables",
+                        "result": "captured",
+                        "snapshot_path": str(path),
+                    },
+                ),
+            ):
+                result, summary = server._tool_runtime_variables(
+                    {"instance_id": instance.instance_id}
+                )
+
+        self.assertEqual(
+            result["persistent_values"],
+            [{"name": "\\mods\\test.ini\\visible", "value": 1.0}],
+        )
+        self.assertIn("Runtime variables captured", summary)
 
     def test_status_retries_while_render_thread_is_temporarily_blocked(self):
         instance = server.Instance(pid=4321, instance="a1b2c3d4")

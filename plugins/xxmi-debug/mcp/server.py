@@ -52,6 +52,8 @@ STATUS_RETRY_DELAY_S = 0.1
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 MAX_PIPE_PAYLOAD = 1024 * 1024
+MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
+MAX_INLINE_RUNTIME_VALUES = 200
 READ_BLOCK_SIZE = 64 * 1024
 LATEST_MCP_VERSION = "2025-11-25"
 SUPPORTED_MCP_VERSIONS = {
@@ -1259,6 +1261,38 @@ def _run_live_probe_command(
     return response, summary + "."
 
 
+def _read_probe_snapshot(path_value: str) -> dict[str, Any]:
+    if not path_value:
+        raise XXMIError(
+            "SNAPSHOT_PATH_MISSING",
+            "The native probe did not return a snapshot path.",
+        )
+    path = Path(path_value)
+    if not path.is_file():
+        raise XXMIError(
+            "SNAPSHOT_NOT_FOUND",
+            f"Probe snapshot does not exist: {path}",
+        )
+    if path.stat().st_size > MAX_SNAPSHOT_BYTES:
+        raise XXMIError(
+            "SNAPSHOT_TOO_LARGE",
+            f"Probe snapshot exceeds {MAX_SNAPSHOT_BYTES} bytes: {path}",
+        )
+    try:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise XXMIError(
+            "SNAPSHOT_INVALID",
+            f"Could not read probe snapshot {path}: {exc}",
+        ) from exc
+    if not isinstance(snapshot, dict):
+        raise XXMIError(
+            "SNAPSHOT_INVALID",
+            f"Probe snapshot is not a JSON object: {path}",
+        )
+    return snapshot
+
+
 def _tool_live_context(
     arguments: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
@@ -1272,11 +1306,24 @@ def _tool_live_context(
 def _tool_runtime_variables(
     arguments: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    return _run_live_probe_command(
+    response, summary = _run_live_probe_command(
         arguments,
         COMMAND_RUNTIME_VARIABLES,
         "Runtime variables",
     )
+    snapshot = _read_probe_snapshot(response.get("snapshot_path", ""))
+    values = snapshot.get("persistent_values", [])
+    if not isinstance(values, list):
+        values = []
+    response["persistent_values"] = values[:MAX_INLINE_RUNTIME_VALUES]
+    response["persistent_values_truncated"] = (
+        len(values) > MAX_INLINE_RUNTIME_VALUES
+    )
+    response["unknown_setting_count"] = snapshot.get(
+        "unknown_setting_count", 0
+    )
+    response["warnings"] = snapshot.get("warnings", [])
+    return response, summary
 
 
 def _tool_live_draw_snapshot(

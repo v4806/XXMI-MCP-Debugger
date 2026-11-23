@@ -146,6 +146,23 @@ TEST_CASE(ControlDispatchQueuesLiveContextAndFailsWithoutSnapshotRoot) {
         std::string::npos);
 }
 
+TEST_CASE(ControlDispatchQueuesRuntimeVariablesAndFailsWithoutSnapshotRoot) {
+    MigotoAdapter adapter;
+    SetReadyForTests(adapter, ReloadCapabilities());
+
+    std::string detail;
+    REQUIRE(adapter.QueueCommand(
+        102, ControlCommand::RuntimeVariables, detail));
+    adapter.ProcessPendingForTests();
+
+    CommandResult result;
+    REQUIRE(adapter.WaitCommand(102, 100, result) ==
+            QueueWaitResult::Completed);
+    REQUIRE_EQ(result.status, 4U);
+    REQUIRE(result.payload.find("runtime_variables_unavailable") !=
+            std::string::npos);
+}
+
 TEST_CASE(ControlDispatchQueuesConfigReloadThroughPendingFlag) {
     g_config_reload_calls = 0;
     AnalysisGlobals globals;

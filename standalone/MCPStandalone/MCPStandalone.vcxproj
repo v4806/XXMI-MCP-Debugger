@@ -94,6 +94,7 @@
     <ClCompile Include="src\MigotoSignatures.cpp" />
     <ClCompile Include="src\ModuleImage.cpp" />
     <ClCompile Include="src\ProbeJson.cpp" />
+    <ClCompile Include="src\RuntimeVariables.cpp" />
     <ClCompile Include="src\SignatureResolver.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -110,6 +111,7 @@
     <ClInclude Include="src\ModuleImage.h" />
     <ClInclude Include="src\ProbeJson.h" />
     <ClInclude Include="src\ProbeTypes.h" />
+    <ClInclude Include="src\RuntimeVariables.h" />
     <ClInclude Include="src\SignatureResolver.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
