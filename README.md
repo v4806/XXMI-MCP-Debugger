@@ -116,9 +116,9 @@ It does not use a fixed XXMI version allowlist. Missing, ambiguous, or invalid
 signatures fail closed and produce an actionable log entry.
 
 The one-shot draw probe resolves `HackerContext::BeforeDraw` from the live
-draw-method vtable and validated direct call targets. If the official layout
-or call shape changes, only that capability fails, the reason is logged, and
-normal rendering continues.
+draw-method vtable and validated direct call targets, with a masked function
+signature fallback. If the official layout or call shape changes, only that
+capability fails, the reason is logged, and normal rendering continues.
 
 Use `MCPStandalone/Tools/analyze_migoto.py` and
 `MCPStandalone/Tools/generate_signatures.py` when a new official DLL changes
