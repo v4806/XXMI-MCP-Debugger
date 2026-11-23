@@ -86,6 +86,7 @@
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\CommandQueue.cpp" />
     <ClCompile Include="src\DiagnosticLog.cpp" />
+    <ClCompile Include="src\DrawProbe.cpp" />
     <ClCompile Include="src\HookRuntime.cpp" />
     <ClCompile Include="src\Hash.cpp" />
     <ClCompile Include="src\LiveStateCapture.cpp" />
@@ -101,6 +102,7 @@
     <ClInclude Include="src\DiagnosticLog.h" />
     <ClInclude Include="src\AdapterTypes.h" />
     <ClInclude Include="src\CommandQueue.h" />
+    <ClInclude Include="src\DrawProbe.h" />
     <ClInclude Include="src\HookRuntime.h" />
     <ClInclude Include="src\Hash.h" />
     <ClInclude Include="src\LiveStateCapture.h" />

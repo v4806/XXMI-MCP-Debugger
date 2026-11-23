@@ -78,8 +78,10 @@
     <ClCompile Include="ProbeJsonTests.cpp" />
     <ClCompile Include="LiveStateCaptureTests.cpp" />
     <ClCompile Include="RuntimeVariablesTests.cpp" />
+    <ClCompile Include="DrawProbeTests.cpp" />
     <ClCompile Include="..\src\DiagnosticLog.cpp" />
     <ClCompile Include="..\src\CommandQueue.cpp" />
+    <ClCompile Include="..\src\DrawProbe.cpp" />
     <ClCompile Include="..\src\HookRuntime.cpp" />
     <ClCompile Include="..\src\MCPBridge.cpp" />
     <ClCompile Include="..\src\Hash.cpp" />
@@ -97,6 +99,7 @@
     <ClInclude Include="..\src\DiagnosticLog.h" />
     <ClInclude Include="..\src\AdapterTypes.h" />
     <ClInclude Include="..\src\CommandQueue.h" />
+    <ClInclude Include="..\src\DrawProbe.h" />
     <ClInclude Include="..\src\HookRuntime.h" />
     <ClInclude Include="..\src\Hash.h" />
     <ClInclude Include="..\src\LiveStateCapture.h" />

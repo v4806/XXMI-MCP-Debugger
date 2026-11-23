@@ -6,9 +6,11 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 
 #include "AdapterTypes.h"
 #include "CommandQueue.h"
+#include "DrawProbe.h"
 #include "MigotoSignatures.h"
 
 class MigotoAdapter {
@@ -58,6 +60,15 @@ private:
         void* hacker_device);
     CommandResult CaptureRuntimeVariablesCommand(
         std::uint32_t request_id);
+    bool StartLiveDrawProbe(
+        std::uint32_t request_id,
+        void* hacker_device,
+        std::string& error);
+    void ProcessDrawProbeAtPresent(std::uint32_t frame);
+    static bool CaptureDrawProbeState(
+        void* context,
+        LiveProbeSnapshot& snapshot,
+        std::string& error);
     bool IsAdapterReady() const;
 
     mutable SRWLOCK lock_ = SRWLOCK_INIT;
@@ -82,6 +93,13 @@ private:
     std::string analysis_root_;
     std::string adapter_module_sha256_;
     std::string mcp_module_sha256_;
+    NativeBeforeDrawHook before_draw_hook_;
+    std::unique_ptr<BeforeDrawProbeController> draw_probe_;
+    ID3D11Device1* draw_probe_device_ = nullptr;
+    ID3D11DeviceContext1* draw_probe_context_ = nullptr;
+    std::uint32_t draw_probe_request_id_ = 0;
+    std::atomic<bool> draw_probe_active_{false};
+    std::atomic<bool> live_draw_available_{false};
     bool present_hooked_ = false;
     bool running_ = false;
 };

@@ -405,6 +405,30 @@ void MigotoAdapter::Run(const std::atomic<bool>& stopping) {
 }
 
 void MigotoAdapter::Shutdown() {
+    if (draw_probe_) {
+        ProcessDrawProbeAtPresent(
+            static_cast<std::uint32_t>(
+                frame_count_.load(std::memory_order_relaxed) + 1));
+    }
+    if (draw_probe_) {
+        std::string cleanup_error;
+        if (draw_probe_->TryRemoveHook(cleanup_error)) {
+            draw_probe_.reset();
+            if (draw_probe_context_) {
+                draw_probe_context_->Release();
+                draw_probe_context_ = nullptr;
+            }
+            if (draw_probe_device_) {
+                draw_probe_device_->Release();
+                draw_probe_device_ = nullptr;
+            }
+            draw_probe_active_.store(false, std::memory_order_release);
+        } else {
+            DiagnosticLog::Error(
+                "live-draw hook cleanup deferred during shutdown: " +
+                cleanup_error);
+        }
+    }
     HookRuntime::RemovePresentFunctionHooks();
     HookRuntime::RemoveCreateDeviceHooks();
     AcquireSRWLockExclusive(&lock_);
@@ -446,6 +470,11 @@ bool MigotoAdapter::QueueCommand(
     std::uint32_t request_id,
     ControlCommand command,
     std::string& detail) {
+    if (command == ControlCommand::LiveDrawSnapshot &&
+        draw_probe_active_.load(std::memory_order_acquire)) {
+        detail = "a live draw probe is already armed";
+        return false;
+    }
     if (!IsAdapterReady()) {
         detail =
             std::string("adapter is not ready: ") +
@@ -456,11 +485,10 @@ bool MigotoAdapter::QueueCommand(
     const auto capabilities = Capabilities();
     const bool available =
         command == ControlCommand::LiveContext ||
-                command == ControlCommand::RuntimeVariables
+                command == ControlCommand::RuntimeVariables ||
+                command == ControlCommand::LiveDrawSnapshot
             ? true
-            : command == ControlCommand::LiveDrawSnapshot
-                  ? false
-                  : command == ControlCommand::FrameAnalysis
+            : command == ControlCommand::FrameAnalysis
             ? capabilities.frame_analysis.available
             : command == ControlCommand::ReloadConfig
                   ? capabilities.reload_config.available &&
@@ -469,9 +497,7 @@ bool MigotoAdapter::QueueCommand(
                   : capabilities.reload_shaders.available;
     if (!available) {
         detail =
-            command == ControlCommand::LiveDrawSnapshot
-                ? "live probe capability is unavailable"
-                : command == ControlCommand::FrameAnalysis
+            command == ControlCommand::FrameAnalysis
                 ? "frame_analysis internal callback was not resolved"
                 : command == ControlCommand::ReloadConfig
                       ? "reload_config pending field was not resolved "
@@ -514,6 +540,12 @@ void MigotoAdapter::SetTestCaptureState(
 }
 
 void MigotoAdapter::ProcessPendingForTests() {
+    ProcessDrawProbeAtPresent(
+        static_cast<std::uint32_t>(
+            frame_count_.load(std::memory_order_relaxed)));
+    ProcessDrawProbeAtPresent(
+        static_cast<std::uint32_t>(
+            frame_count_.load(std::memory_order_relaxed)));
     ExecutePendingCommand();
 }
 #endif
@@ -575,6 +607,8 @@ AdapterSnapshot MigotoAdapter::Snapshot() const {
             snapshot.capabilities.emplace_back("reload_shaders");
         snapshot.capabilities.emplace_back("live_context");
         snapshot.capabilities.emplace_back("runtime_variables");
+        if (live_draw_available_.load(std::memory_order_acquire))
+            snapshot.capabilities.emplace_back("live_draw");
     }
 
     snapshot.frame = frame_count_.load(std::memory_order_relaxed);
@@ -923,6 +957,221 @@ CommandResult MigotoAdapter::CaptureRuntimeVariablesCommand(
     return {0, stream.str()};
 }
 
+bool MigotoAdapter::CaptureDrawProbeState(
+    void* context,
+    LiveProbeSnapshot& snapshot,
+    std::string& error) {
+    auto* adapter = static_cast<MigotoAdapter*>(context);
+    if (!adapter || !adapter->draw_probe_device_) {
+        error = "draw probe device is unavailable";
+        return false;
+    }
+
+    const auto current = adapter->Snapshot();
+    snapshot.d3d11_sha256 = adapter->adapter_module_sha256_;
+    snapshot.mcp_sha256 = adapter->mcp_module_sha256_;
+    snapshot.process_path = adapter->process_path_;
+    snapshot.dll_path = adapter->dll_path_;
+    snapshot.config_path = adapter->config_path_;
+    snapshot.log_path = adapter->log_path_;
+    snapshot.analysis_root = adapter->analysis_root_;
+    snapshot.pid = GetCurrentProcessId();
+    snapshot.captured_unix_ms =
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    snapshot.hunting = current.hunting;
+    snapshot.analysis_active = current.analysis_active;
+    if (snapshot.d3d11_sha256.empty())
+        snapshot.missing_fields.emplace_back("d3d11_sha256");
+    if (snapshot.mcp_sha256.empty())
+        snapshot.missing_fields.emplace_back("mcp_sha256");
+    return CaptureImmediateContext(
+        adapter->draw_probe_device_, snapshot, error);
+}
+
+bool MigotoAdapter::StartLiveDrawProbe(
+    std::uint32_t request_id,
+    void* hacker_device,
+    std::string& error) {
+    error.clear();
+    if (draw_probe_) {
+        error = "a live draw probe is already armed";
+        return false;
+    }
+    if (!hacker_device) {
+        error = "HackerDevice is unavailable";
+        return false;
+    }
+
+    ID3D11Device1* device = nullptr;
+    const auto query = static_cast<IUnknown*>(hacker_device)
+                           ->QueryInterface(
+                               __uuidof(ID3D11Device1),
+                               reinterpret_cast<void**>(&device));
+    if (FAILED(query) || !device) {
+        error = "HackerDevice does not expose ID3D11Device1";
+        return false;
+    }
+
+    ID3D11DeviceContext1* context = nullptr;
+    device->GetImmediateContext1(&context);
+    if (!context) {
+        device->Release();
+        error = "could not obtain the immediate HackerContext";
+        return false;
+    }
+
+    const HMODULE module = GetModuleHandleW(L"d3d11.dll");
+    const auto image = module ? ModuleImage::Load(module)
+                              : std::optional<ModuleImage>{};
+    if (!image) {
+        context->Release();
+        device->Release();
+        error = module
+                    ? "could not load official d3d11.dll image: " +
+                          ModuleImage::LastLoadError()
+                    : "official d3d11.dll is not loaded";
+        return false;
+    }
+
+    void* target = nullptr;
+    std::string resolve_detail;
+    if (!ResolveBeforeDrawTarget(
+            context, *image, target, resolve_detail)) {
+        context->Release();
+        device->Release();
+        DiagnosticLog::Error(
+            "before-draw resolver failed: " + resolve_detail);
+        error = resolve_detail;
+        return false;
+    }
+    DiagnosticLog::Info(
+        "before-draw resolver passed: " + resolve_detail);
+
+    auto probe = std::make_unique<BeforeDrawProbeController>(
+        before_draw_hook_,
+        &MigotoAdapter::CaptureDrawProbeState,
+        this);
+    if (!probe->Arm(
+            target,
+            context,
+            static_cast<std::uint32_t>(
+                frame_count_.load(std::memory_order_relaxed)),
+            error)) {
+        context->Release();
+        device->Release();
+        DiagnosticLog::Error(
+            "before-draw hook arm failed: " + error);
+        return false;
+    }
+
+    draw_probe_device_ = device;
+    draw_probe_context_ = context;
+    draw_probe_request_id_ = request_id;
+    draw_probe_ = std::move(probe);
+    draw_probe_active_.store(true, std::memory_order_release);
+    live_draw_available_.store(true, std::memory_order_release);
+    return true;
+}
+
+void MigotoAdapter::ProcessDrawProbeAtPresent(
+    std::uint32_t frame) {
+    if (!draw_probe_)
+        return;
+    draw_probe_->OnPresent(frame);
+    if (!draw_probe_->HasResult())
+        return;
+
+    auto snapshot = draw_probe_->Snapshot();
+    const auto state = draw_probe_->State();
+    if (state == DrawProbeState::NotMatched) {
+        snapshot.missing_fields.emplace_back("draw_match");
+        snapshot.warnings.emplace_back(
+            "no immediate-context draw matched before the next Present");
+    } else if (state == DrawProbeState::Failed) {
+        snapshot.missing_fields.emplace_back("draw_capture");
+        snapshot.warnings.push_back(draw_probe_->Error());
+    }
+
+    CommandResult result;
+    std::string snapshot_path_string;
+    const auto directory = ProbeSnapshotDirectory(analysis_root_);
+    if (!directory.empty()) {
+        const auto snapshot_directory = Utf8Path(directory);
+        const auto filename =
+            "live-draw-" + std::to_string(snapshot.frame) + "-" +
+            std::to_string(draw_probe_request_id_) + ".json";
+        const auto snapshot_path =
+            snapshot_directory / Utf8Path(filename);
+        std::string write_error;
+        if (WriteProbeSnapshot(
+                snapshot_path, snapshot, write_error)) {
+            snapshot_path_string = Utf8String(snapshot_path);
+            std::string retention_error;
+            if (!RetainNewestProbeSnapshots(
+                    snapshot_directory, 20, retention_error)) {
+                DiagnosticLog::Warn(
+                    "live-draw snapshot retention failed: " +
+                    retention_error);
+            }
+        } else {
+            result = ErrorResult(
+                5,
+                "snapshot_write_failed",
+                write_error);
+        }
+    } else {
+        result = ErrorResult(
+            4,
+            "snapshot_directory_unavailable",
+            "analysis root is unavailable");
+    }
+
+    if (result.status == 0 && state == DrawProbeState::Captured) {
+        std::ostringstream stream;
+        stream << "command=live_draw\n";
+        stream << "result=captured\n";
+        stream << "snapshot_path=" << snapshot_path_string << '\n';
+        stream << "frame=" << snapshot.frame << '\n';
+        stream << "draw_type=" << snapshot.draw.type << '\n';
+        stream << "resource_count="
+               << snapshot.resources.size() << '\n';
+        stream << "missing_field_count="
+               << snapshot.missing_fields.size() << '\n';
+        result = {0, stream.str()};
+    } else if (result.status == 0 &&
+               state == DrawProbeState::NotMatched) {
+        std::ostringstream stream;
+        stream << "command=live_draw\n";
+        stream << "result=not_matched\n";
+        stream << "snapshot_path=" << snapshot_path_string << '\n';
+        stream << "frame=" << snapshot.frame << '\n';
+        result = {0, stream.str()};
+    } else if (result.status == 0 &&
+               state == DrawProbeState::Failed) {
+        std::ostringstream stream;
+        stream << "error=live_draw_capture_failed\n";
+        stream << "error_message=" << draw_probe_->Error() << '\n';
+        stream << "snapshot_path=" << snapshot_path_string << '\n';
+        result = {5, stream.str()};
+    }
+
+    command_queue_.Complete(result);
+    draw_probe_.reset();
+    if (draw_probe_context_) {
+        draw_probe_context_->Release();
+        draw_probe_context_ = nullptr;
+    }
+    if (draw_probe_device_) {
+        draw_probe_device_->Release();
+        draw_probe_device_ = nullptr;
+    }
+    draw_probe_request_id_ = 0;
+    draw_probe_active_.store(false, std::memory_order_release);
+}
+
 void MigotoAdapter::ExecutePendingCommand() {
     const auto request = command_queue_.Claim();
     if (!request)
@@ -937,6 +1186,7 @@ void MigotoAdapter::ExecutePendingCommand() {
     }
 
     CommandResult result;
+    bool complete_command = true;
     if (request->command == ControlCommand::FrameAnalysis) {
         if (!capabilities.frame_analysis.available ||
             !capabilities.globals) {
@@ -1062,10 +1312,16 @@ void MigotoAdapter::ExecutePendingCommand() {
         result = CaptureRuntimeVariablesCommand(
             request->request_id);
     } else if (request->command == ControlCommand::LiveDrawSnapshot) {
-        result = ErrorResult(
-            4,
-            "live_draw_unavailable",
-            "live draw capture is not available in this build");
+        std::string probe_error;
+        if (StartLiveDrawProbe(
+                request->request_id, device, probe_error)) {
+            complete_command = false;
+        } else {
+            result = ErrorResult(
+                5,
+                "live_draw_unavailable",
+                probe_error);
+        }
     } else if (request->command == ControlCommand::ReloadConfig) {
         if (!capabilities.reload_config.available ||
             !capabilities.globals ||
@@ -1114,5 +1370,6 @@ void MigotoAdapter::ExecutePendingCommand() {
                                std::to_string(exception));
         }
     }
-    command_queue_.Complete(result);
+    if (complete_command)
+        command_queue_.Complete(result);
 }
