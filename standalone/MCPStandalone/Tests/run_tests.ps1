@@ -119,7 +119,7 @@ print(f"export check passed ({len(names)} named exports)")
 print("static CRT import check passed")
 '@
 Invoke-Checked {
-    & python -c $exportCheck $releaseDll
+    $exportCheck | & python - $releaseDll
 } 'DLL export check'
 
 $official = $env:XXMI_OFFICIAL_DLL

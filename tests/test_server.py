@@ -229,6 +229,21 @@ class NativeProtocolTests(unittest.TestCase):
             )
         )
 
+    def test_jsonrpc_initialize_reports_plugin_version(self):
+        response = server.process_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25"},
+            }
+        )
+
+        self.assertEqual(
+            response["result"]["serverInfo"],
+            {"name": "xxmi-debug", "version": "0.1.7"},
+        )
+
     def test_jsonrpc_request_rejects_non_object_params(self):
         response = server.process_message(
             {

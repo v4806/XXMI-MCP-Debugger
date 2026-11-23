@@ -56,6 +56,7 @@ MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 MAX_INLINE_RUNTIME_VALUES = 200
 READ_BLOCK_SIZE = 64 * 1024
 LATEST_MCP_VERSION = "2025-11-25"
+PLUGIN_VERSION = "0.1.7"
 SUPPORTED_MCP_VERSIONS = {
     "2024-11-05",
     "2025-03-26",
@@ -1746,7 +1747,10 @@ def handle_rpc(message: dict[str, Any]) -> dict[str, Any] | None:
             {
                 "protocolVersion": protocol_version,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "xxmi-debug", "version": "0.1.6"},
+                "serverInfo": {
+                    "name": "xxmi-debug",
+                    "version": PLUGIN_VERSION,
+                },
             },
         )
     if method == "notifications/initialized":
