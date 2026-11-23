@@ -18,6 +18,11 @@ The bridge exposes only the runtime operations needed for Mod debugging:
 - request one FrameAnalysis capture;
 - reload shaders;
 - request an official configuration reload;
+- capture the current immediate-context D3D11 pipeline state;
+- read persistent Mod variables and unknown-setting diagnostics;
+- capture one exact immediate-context draw;
+- compare repeated draw captures across a bounded frame sequence;
+- query saved resource bindings and override/skip traces;
 - report frame timing, hunting state, capture state, and compatibility
   diagnostics.
 
@@ -85,6 +90,17 @@ Python server path.
 `mcp.dll` writes `xxmi_mcp.log` beside the DLL. The log rotates at 2 MiB and
 keeps one previous file.
 
+Live probe snapshots are written under:
+
+```text
+<official d3d11.dll directory>\xxmi_mcp_snapshots\
+```
+
+Each JSON file is capped at 2 MiB and the newest 20 files are retained.
+`xxmi_live_draw_snapshot` installs the official `BeforeDraw` hook only for the
+requested capture and leaves it pass-through until the next Present can remove
+it safely.
+
 The MCP endpoint uses a local Windows named pipe:
 
 ```text
@@ -98,6 +114,11 @@ It does not open a network listener.
 The adapter resolves the official functions and `Globals` fields at runtime.
 It does not use a fixed XXMI version allowlist. Missing, ambiguous, or invalid
 signatures fail closed and produce an actionable log entry.
+
+The one-shot draw probe resolves `HackerContext::BeforeDraw` from the live
+draw-method vtable and validated direct call targets. If the official layout
+or call shape changes, only that capability fails, the reason is logged, and
+normal rendering continues.
 
 Use `MCPStandalone/Tools/analyze_migoto.py` and
 `MCPStandalone/Tools/generate_signatures.py` when a new official DLL changes

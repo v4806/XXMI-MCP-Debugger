@@ -18,6 +18,16 @@ Use the `xxmi-debug` MCP tools as the runtime channel. Never find, focus, inspec
 7. Use `xxmi_live_context` for the current D3D11 frame-end state, `xxmi_runtime_variables` for Mod conditions and user variables, and `xxmi_live_draw_snapshot` for one exact immediate-context draw. These probes write bounded JSON files and return their paths.
 8. Use `xxmi_watch_draw_delta` only when one live draw is insufficient and the dynamic values need comparison across a bounded number of frames. Use `xxmi_probe_resource` and `xxmi_override_trace` to inspect the latest saved snapshot.
 
+`xxmi_live_draw_snapshot` captures the first immediate-context draw after the
+request. If it returns `not_matched`, do not retry blindly; check whether the
+game is paused, loading, or presenting without draws. `xxmi_watch_draw_delta`
+accepts 2 to 30 frames and stops on the first native error.
+
+`xxmi_probe_resource` filters saved resource bindings by stage, slot, hash, or
+pointer. Pointer fields are omitted unless `include_pointers=true`.
+`xxmi_override_trace` reports only the observed skip, hunting-skip, and
+post-command slots. Treat `missing_fields` as unavailable data, not as zero.
+
 Treat frame capture as a one-shot diagnostic action: the DLL temporarily enables hunting when needed and restores the prior mode after the capture. It rejects `analyse_options=hold` and can cause a temporary one-frame stall while 3DMigoto writes resources. Do not change game input yourself.
 
 Treat returned file paths as read-only telemetry unless the user explicitly authorizes editing or exporting those files. Keep searches narrow and limits small enough to avoid pulling an entire frame-analysis log into context.
