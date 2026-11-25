@@ -393,6 +393,9 @@ bool BeforeDrawProbeController::Arm(
     target_context_ = immediate_context;
     frame_ = frame;
     pending_result_state_ = DrawProbeState::Idle;
+    foreign_snapshot_ = {};
+    foreign_draw_pending_ = false;
+    foreign_draw_ready_ = false;
     if (!hook_.Install(
             official_before_draw,
             &BeforeDrawProbeController::HookCallback,
@@ -432,17 +435,15 @@ void BeforeDrawProbeController::HandleHook(
     void* hacker_context,
     void* draw_context,
     bool after_original) {
-    if (hacker_context != target_context_)
+    if (hacker_context != target_context_) {
+        HandleForeignDraw(hacker_context, draw_context, after_original);
         return;
+    }
+
     if (!after_original) {
         if (state_ != DrawProbeState::Armed)
             return;
-        ProbeDrawContext context;
-        if (!ReadDrawContext(draw_context, context)) {
-            AddMissing(snapshot_, "draw_context");
-        } else {
-            FillDrawInfo(snapshot_, context);
-        }
+        StartDraw(snapshot_, hacker_context, draw_context);
         state_ = DrawProbeState::Capturing;
         return;
     }
@@ -451,26 +452,87 @@ void BeforeDrawProbeController::HandleHook(
         state_ != DrawProbeState::Failed) {
         return;
     }
-    if (capture_callback_ &&
-        !capture_callback_(
-            capture_context_, snapshot_, error_)) {
+    if (!FinishDraw(snapshot_, hacker_context, draw_context))
         state_ = DrawProbeState::Failed;
+    if (state_ == DrawProbeState::Capturing)
+        state_ = DrawProbeState::Captured;
+}
+
+// A game may present from more than one immediate context, and the adapter can
+// resolve a device that never draws (for example a helper device whose
+// swapchain has an empty back buffer). The draw on the probe context stays
+// preferred; a draw from any other immediate context is captured as a late
+// fallback so the request still answers with real data instead of not_matched.
+void BeforeDrawProbeController::HandleForeignDraw(
+    void* hacker_context,
+    void* draw_context,
+    bool after_original) {
+    if (after_original) {
+        if (!foreign_draw_pending_ || state_ != DrawProbeState::Armed)
+            return;
+        foreign_draw_pending_ = false;
+        if (!FinishDraw(foreign_snapshot_, hacker_context, draw_context))
+            return;
+        foreign_draw_ready_ = true;
+        return;
+    }
+
+    if (state_ != DrawProbeState::Armed)
+        return;
+    foreign_snapshot_ = snapshot_;
+    StartDraw(foreign_snapshot_, hacker_context, draw_context);
+    foreign_draw_pending_ = true;
+    foreign_draw_ready_ = false;
+}
+
+void BeforeDrawProbeController::StartDraw(
+    LiveProbeSnapshot& snapshot,
+    void* hacker_context,
+    void* draw_context) {
+    snapshot.context_pointer =
+        reinterpret_cast<std::uintptr_t>(hacker_context);
+    ProbeDrawContext context;
+    if (!ReadDrawContext(draw_context, context)) {
+        AddMissing(snapshot, "draw_context");
+    } else {
+        FillDrawInfo(snapshot, context);
+    }
+}
+
+bool BeforeDrawProbeController::FinishDraw(
+    LiveProbeSnapshot& snapshot,
+    void* hacker_context,
+    void* draw_context) {
+    bool captured = true;
+    if (capture_callback_) {
+        captured = capture_callback_(
+            capture_context_,
+            hacker_context,
+            snapshot,
+            error_);
     }
 
     ProbeDrawContext context;
     if (ReadDrawContext(draw_context, context)) {
-        FillDrawResult(snapshot_, context);
+        FillDrawResult(snapshot, context);
     } else {
-        AddMissing(snapshot_, "draw_result");
+        AddMissing(snapshot, "draw_result");
     }
-    if (state_ == DrawProbeState::Capturing)
-        state_ = DrawProbeState::Captured;
+    return captured;
 }
 
 void BeforeDrawProbeController::OnPresent(std::uint32_t frame) {
     if (state_ == DrawProbeState::Armed &&
         frame > frame_) {
-        pending_result_state_ = DrawProbeState::NotMatched;
+        if (foreign_draw_ready_) {
+            snapshot_ = std::move(foreign_snapshot_);
+            snapshot_.warnings.emplace_back(
+                "the only draw before Present came from a different "
+                "HackerContext than the probe device");
+            pending_result_state_ = DrawProbeState::Captured;
+        } else {
+            pending_result_state_ = DrawProbeState::NotMatched;
+        }
         state_ = DrawProbeState::RemovePending;
     } else if (state_ == DrawProbeState::Capturing) {
         pending_result_state_ = DrawProbeState::NotMatched;

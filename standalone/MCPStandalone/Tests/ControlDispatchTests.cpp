@@ -223,6 +223,7 @@ TEST_CASE(ControlDispatchRejectsFrameAnalysisWithoutPostCallbackAck) {
     REQUIRE(adapter.QueueCommand(
         96, ControlCommand::FrameAnalysis, detail));
     adapter.ProcessPendingForTests();
+    adapter.ProcessPostPresentForTests();
 
     CommandResult result;
     REQUIRE(adapter.WaitCommand(96, 100, result) ==
@@ -252,6 +253,7 @@ TEST_CASE(ControlDispatchRejectsFrameAnalysisWithPathButInactive) {
     REQUIRE(adapter.QueueCommand(
         97, ControlCommand::FrameAnalysis, detail));
     adapter.ProcessPendingForTests();
+    adapter.ProcessPostPresentForTests();
 
     CommandResult result;
     REQUIRE(adapter.WaitCommand(97, 100, result) ==
@@ -279,6 +281,7 @@ TEST_CASE(ControlDispatchAcknowledgesFrameAnalysisAndReportsPath) {
     REQUIRE(adapter.QueueCommand(
         98, ControlCommand::FrameAnalysis, detail));
     adapter.ProcessPendingForTests();
+    adapter.ProcessPostPresentForTests();
 
     CommandResult result;
     REQUIRE(adapter.WaitCommand(98, 100, result) ==
@@ -310,6 +313,7 @@ TEST_CASE(ControlDispatchFrameAnalysisFailsBeforeCallbackWhenGlobalsUnreadable) 
     REQUIRE(adapter.QueueCommand(
         99, ControlCommand::FrameAnalysis, detail));
     adapter.ProcessPendingForTests();
+    adapter.ProcessPostPresentForTests();
 
     CommandResult result;
     REQUIRE(adapter.WaitCommand(99, 100, result) ==
@@ -318,4 +322,38 @@ TEST_CASE(ControlDispatchFrameAnalysisFailsBeforeCallbackWhenGlobalsUnreadable) 
     REQUIRE(result.payload.find("frame_analysis_hunting_unreadable") !=
             std::string::npos);
     REQUIRE_EQ(g_frame_analysis_calls, 0);
+}
+
+TEST_CASE(ControlDispatchDefersFrameAnalysisUntilPostPresentSeam) {
+    AnalysisGlobals globals;
+    globals.hunting = 2;
+    g_analysis_globals = &globals;
+    g_frame_analysis_behavior = FrameAnalysisBehavior::Accepted;
+    g_frame_analysis_calls = 0;
+
+    MigotoAdapter adapter;
+    SetReadyForTests(
+        adapter,
+        FrameAnalysisCapabilities(
+            reinterpret_cast<std::uintptr_t>(&globals)));
+
+    std::string detail;
+    REQUIRE(adapter.QueueCommand(
+        104, ControlCommand::FrameAnalysis, detail));
+
+    // The pre-present seam must only defer the request: arming here would be
+    // cancelled by the same present's RunFrameActions().
+    adapter.ProcessPendingForTests();
+    REQUIRE_EQ(g_frame_analysis_calls, 0);
+    REQUIRE_EQ(globals.hunting, 2U);
+
+    adapter.ProcessPostPresentForTests();
+    REQUIRE_EQ(g_frame_analysis_calls, 1);
+    REQUIRE_EQ(globals.hunting, 1U);
+
+    CommandResult result;
+    REQUIRE(adapter.WaitCommand(104, 100, result) ==
+            QueueWaitResult::Completed);
+    REQUIRE_EQ(result.status, 0U);
+    REQUIRE(result.payload.find("result=accepted") != std::string::npos);
 }

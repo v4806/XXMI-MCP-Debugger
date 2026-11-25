@@ -25,8 +25,11 @@ struct FakeHackerDevice {
 
 struct HookProbe {
     int frames = 0;
+    int post_frames = 0;
     int original_present = 0;
     int original_present1 = 0;
+    int frames_before_original = -1;
+    int posts_after_original = -1;
 };
 
 __declspec(noinline) HRESULT STDMETHODCALLTYPE OriginalPresentFunction(
@@ -84,7 +87,15 @@ HRESULT STDMETHODCALLTYPE OriginalPresent1(
 }
 
 void STDMETHODCALLTYPE FrameCallback(void* context, IDXGISwapChain*) {
-    ++static_cast<HookProbe*>(context)->frames;
+    auto* probe = static_cast<HookProbe*>(context);
+    ++probe->frames;
+    probe->frames_before_original = probe->original_present;
+}
+
+void STDMETHODCALLTYPE PostFrameCallback(void* context, IDXGISwapChain*) {
+    auto* probe = static_cast<HookProbe*>(context);
+    ++probe->post_frames;
+    probe->posts_after_original = probe->original_present;
 }
 
 void FillVtable(std::array<void*, kVtableSlots + 1>& table) {
@@ -104,7 +115,7 @@ TEST_CASE(PresentVtableHookCallsThroughAndNotifiesFrameCallback) {
     FillVtable(original_vtable);
     FakeSwapChain object = {&original_vtable[1]};
     HookProbe probe;
-    PresentHookCallbacks callbacks = {&FrameCallback, &probe};
+    PresentHookCallbacks callbacks = {&FrameCallback, nullptr, &probe};
     PresentHookReset reset;
 
     HookRuntime::ResetPresentHooksForTests();
@@ -143,7 +154,7 @@ TEST_CASE(PresentVtableHookRejectsNullObject) {
     const auto image = ModuleImage::Load(GetModuleHandleW(nullptr));
     REQUIRE(image.has_value());
     HookProbe probe;
-    PresentHookCallbacks callbacks = {&FrameCallback, &probe};
+    PresentHookCallbacks callbacks = {&FrameCallback, nullptr, &probe};
     PresentHookReset reset;
     std::string detail;
     REQUIRE(!HookRuntime::InstallPresentHookForObject(
@@ -159,7 +170,7 @@ TEST_CASE(PresentVtableHookRejectsUnreadableObjectVptr) {
     REQUIRE(image.has_value());
     FakeSwapChain object = {reinterpret_cast<void**>(0x1)};
     HookProbe probe;
-    PresentHookCallbacks callbacks = {&FrameCallback, &probe};
+    PresentHookCallbacks callbacks = {&FrameCallback, nullptr, &probe};
     PresentHookReset reset;
     std::string detail;
 
@@ -180,7 +191,7 @@ TEST_CASE(PresentVtableHookRejectsMissingRttiStorage) {
     original_vtable[0] = nullptr;
     FakeSwapChain object = {&original_vtable[1]};
     HookProbe probe;
-    PresentHookCallbacks callbacks = {&FrameCallback, &probe};
+    PresentHookCallbacks callbacks = {&FrameCallback, nullptr, &probe};
     PresentHookReset reset;
     std::string detail;
 
@@ -201,7 +212,7 @@ TEST_CASE(PresentVtableHookRejectsPresentSlotOutsideModule) {
         reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x10000));
     FakeSwapChain object = {&original_vtable[1]};
     HookProbe probe;
-    PresentHookCallbacks callbacks = {&FrameCallback, &probe};
+    PresentHookCallbacks callbacks = {&FrameCallback, nullptr, &probe};
     PresentHookReset reset;
     std::string detail;
 
@@ -226,7 +237,7 @@ TEST_CASE(PresentVtableHookRejectsPresent1SlotNotFunctionStart) {
         reinterpret_cast<void*>(text->address + 1);
     FakeSwapChain object = {&original_vtable[1]};
     HookProbe probe;
-    PresentHookCallbacks callbacks = {&FrameCallback, &probe};
+    PresentHookCallbacks callbacks = {&FrameCallback, nullptr, &probe};
     PresentHookReset reset;
     std::string detail;
 
@@ -270,7 +281,7 @@ TEST_CASE(PresentHooksSkipFrameCallbacksForPresentTest) {
     FillVtable(original_vtable);
     FakeSwapChain object = {&original_vtable[1]};
     HookProbe probe;
-    PresentHookCallbacks callbacks = {&FrameCallback, &probe};
+    PresentHookCallbacks callbacks = {&FrameCallback, nullptr, &probe};
     PresentHookReset reset;
 
     HookRuntime::ResetPresentHooksForTests();
@@ -312,7 +323,7 @@ TEST_CASE(PresentHooksSkipFrameCallbacksForPresentTest) {
 TEST_CASE(PresentFunctionHooksNotifyAndSkipPresentTest) {
     HookProbe probe;
     HookRuntime::SetPresentTestContext(&probe);
-    PresentHookCallbacks callbacks = {&FrameCallback, &probe};
+    PresentHookCallbacks callbacks = {&FrameCallback, nullptr, &probe};
     PresentHookReset reset;
     std::string detail;
     REQUIRE(HookRuntime::InstallPresentFunctionHooks(
@@ -336,4 +347,39 @@ TEST_CASE(PresentFunctionHooksNotifyAndSkipPresentTest) {
     REQUIRE_EQ(probe.frames, 2);
     REQUIRE_EQ(probe.original_present, 2);
     REQUIRE_EQ(probe.original_present1, 2);
+}
+
+TEST_CASE(PresentVtableHookRunsPostFrameAfterOriginalPresent) {
+    const auto image = ModuleImage::Load(GetModuleHandleW(nullptr));
+    REQUIRE(image.has_value());
+    std::array<void*, kVtableSlots + 1> original_vtable = {};
+    FillVtable(original_vtable);
+    FakeSwapChain object = {&original_vtable[1]};
+    HookProbe probe;
+    PresentHookCallbacks callbacks = {
+        &FrameCallback, &PostFrameCallback, &probe};
+    PresentHookReset reset;
+
+    HookRuntime::ResetPresentHooksForTests();
+    HookRuntime::SetPresentTestContext(&probe);
+
+    std::string detail;
+    REQUIRE(HookRuntime::InstallPresentHookForObject(
+        reinterpret_cast<IDXGISwapChain*>(&object),
+        callbacks,
+        *image,
+        detail));
+
+    auto* current_vtable = object.object_vptr;
+    using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+    const auto present =
+        reinterpret_cast<PresentFn>(current_vtable[kPresentSlot]);
+    REQUIRE_EQ(present(reinterpret_cast<IDXGISwapChain*>(&object), 1, 0), S_OK);
+
+    REQUIRE_EQ(probe.frames, 1);
+    REQUIRE_EQ(probe.post_frames, 1);
+    // The pre seam runs before the original Present; the post seam must run
+    // after it, which is where frame analysis is armed.
+    REQUIRE_EQ(probe.frames_before_original, 0);
+    REQUIRE_EQ(probe.posts_after_original, 1);
 }

@@ -42,6 +42,7 @@ public:
 
 using DrawProbeCaptureCallback = bool (*)(
     void* capture_context,
+    void* drawing_context,
     LiveProbeSnapshot& snapshot,
     std::string& error);
 
@@ -76,6 +77,18 @@ private:
         void* hacker_context,
         void* draw_context,
         bool after_original);
+    void HandleForeignDraw(
+        void* hacker_context,
+        void* draw_context,
+        bool after_original);
+    void StartDraw(
+        LiveProbeSnapshot& snapshot,
+        void* hacker_context,
+        void* draw_context);
+    bool FinishDraw(
+        LiveProbeSnapshot& snapshot,
+        void* hacker_context,
+        void* draw_context);
 
     BeforeDrawHook& hook_;
     DrawProbeCaptureCallback capture_callback_;
@@ -86,6 +99,9 @@ private:
     DrawProbeState pending_result_state_ = DrawProbeState::Idle;
     LiveProbeSnapshot snapshot_;
     std::string error_;
+    LiveProbeSnapshot foreign_snapshot_;
+    bool foreign_draw_pending_ = false;
+    bool foreign_draw_ready_ = false;
 };
 
 class NativeBeforeDrawHook final : public BeforeDrawHook {

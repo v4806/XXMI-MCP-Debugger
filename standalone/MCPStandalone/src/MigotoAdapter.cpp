@@ -28,6 +28,36 @@ constexpr std::uintptr_t kShaderPathOffset = 0xC0;
 constexpr std::uintptr_t kAnalysisPathOffset = 8;
 constexpr std::uint64_t kDeviceCaptureTimeoutMs = 10000;
 
+// A game may create a second device whose swapchain has no real back buffer
+// (a helper or offscreen device). Probes must follow the device that actually
+// presents the visible frame, so devices are ranked by back-buffer area.
+std::uint64_t SwapChainArea(IDXGISwapChain* swap_chain) {
+    if (!swap_chain)
+        return 0;
+    DXGI_SWAP_CHAIN_DESC description = {};
+    if (FAILED(swap_chain->GetDesc(&description)))
+        return 0;
+    return static_cast<std::uint64_t>(description.BufferDesc.Width) *
+           static_cast<std::uint64_t>(description.BufferDesc.Height);
+}
+
+ID3D11Device1* DeviceFromContext(void* drawing_context) {
+    if (!drawing_context)
+        return nullptr;
+    auto* context =
+        static_cast<ID3D11DeviceContext*>(drawing_context);
+    ID3D11Device* device = nullptr;
+    context->GetDevice(&device);
+    if (!device)
+        return nullptr;
+    ID3D11Device1* device1 = nullptr;
+    const auto query = device->QueryInterface(
+        __uuidof(ID3D11Device1),
+        reinterpret_cast<void**>(&device1));
+    device->Release();
+    return SUCCEEDED(query) ? device1 : nullptr;
+}
+
 std::wstring ModulePath(HMODULE module) {
     std::wstring buffer(32768, L'\0');
     const DWORD length =
@@ -304,10 +334,11 @@ void MigotoAdapter::Run(const std::atomic<bool>& stopping) {
                                               : "read-only") +
                         " mode");
 
-                    PresentHookCallbacks frame_callbacks = {
-                        &MigotoAdapter::OnFrame,
-                        this,
-                    };
+                    PresentHookCallbacks frame_callbacks;
+                    frame_callbacks.on_frame = &MigotoAdapter::OnFrame;
+                    frame_callbacks.on_post_frame =
+                        &MigotoAdapter::OnPostFrame;
+                    frame_callbacks.context = this;
                     std::string present_hook_detail;
                     if (!HookRuntime::InstallPresentFunctionHooks(
                             capabilities_.present.available
@@ -434,6 +465,9 @@ void MigotoAdapter::Shutdown() {
     HookRuntime::RemovePresentFunctionHooks();
     HookRuntime::RemoveCreateDeviceHooks();
     AcquireSRWLockExclusive(&lock_);
+    for (auto* device : captured_devices_)
+        static_cast<IUnknown*>(device)->Release();
+    captured_devices_.clear();
     if (hacker_device_) {
         static_cast<IUnknown*>(hacker_device_)->Release();
         hacker_device_ = nullptr;
@@ -542,7 +576,11 @@ void MigotoAdapter::SetTestCaptureState(
 }
 
 void MigotoAdapter::ProcessPendingForTests() {
-    ExecutePendingCommand();
+    ExecutePendingCommand(false);
+}
+
+void MigotoAdapter::ProcessPostPresentForTests() {
+    ExecutePendingCommand(true);
 }
 #endif
 
@@ -670,6 +708,12 @@ void MigotoAdapter::OnFrame(
     static_cast<MigotoAdapter*>(context)->HandleFrame(swap_chain);
 }
 
+void MigotoAdapter::OnPostFrame(
+    void* context,
+    IDXGISwapChain* swap_chain) {
+    static_cast<MigotoAdapter*>(context)->HandlePostFrame(swap_chain);
+}
+
 void MigotoAdapter::HandleDeviceCreated(
     ID3D11Device* device,
     IDXGISwapChain* swap_chain) {
@@ -689,11 +733,23 @@ void MigotoAdapter::HandleDeviceCreated(
     }
 
     AcquireSRWLockExclusive(&lock_);
+    const auto new_area = SwapChainArea(swap_chain);
+    const auto current_area = SwapChainArea(swap_chain_);
+    if (hacker_device_ && new_area < current_area) {
+        RememberDeviceLocked(hacker_device);
+        ReleaseSRWLockExclusive(&lock_);
+        static_cast<IUnknown*>(hacker_device)->Release();
+        DiagnosticLog::Info(
+            "kept the captured HackerDevice; the new one has a smaller "
+            "swapchain back buffer");
+        return;
+    }
     if (hacker_device_) {
         static_cast<IUnknown*>(hacker_device_)->Release();
         hacker_device_ = nullptr;
     }
     hacker_device_ = hacker_device;
+    RememberDeviceLocked(hacker_device);
     if (swap_chain)
         swap_chain_ = swap_chain;
     ReleaseSRWLockExclusive(&lock_);
@@ -717,7 +773,74 @@ void MigotoAdapter::HandleDeviceCreated(
 
 }
 
-void MigotoAdapter::HandleFrame(IDXGISwapChain*) {
+void MigotoAdapter::RememberDeviceLocked(void* hacker_device) {
+    if (!hacker_device)
+        return;
+    constexpr std::size_t kMaxCapturedDevices = 8;
+    for (const auto* existing : captured_devices_) {
+        if (existing == hacker_device)
+            return;
+    }
+    if (captured_devices_.size() >= kMaxCapturedDevices)
+        return;
+    static_cast<IUnknown*>(hacker_device)->AddRef();
+    captured_devices_.push_back(hacker_device);
+}
+
+void MigotoAdapter::AdoptPresentingDevice(IDXGISwapChain* swap_chain) {
+    if (!swap_chain)
+        return;
+    AcquireSRWLockShared(&lock_);
+    const bool known = swap_chain == swap_chain_;
+    ReleaseSRWLockShared(&lock_);
+
+    if (known)
+        return;
+
+    ID3D11Device* device = nullptr;
+    const auto device_query = swap_chain->GetDevice(
+        __uuidof(ID3D11Device),
+        reinterpret_cast<void**>(&device));
+    if (FAILED(device_query) || !device)
+        return;
+    IUnknown* hacker_device = nullptr;
+    const auto hacker_query = device->QueryInterface(
+        kHackerDeviceIid,
+        reinterpret_cast<void**>(&hacker_device));
+    device->Release();
+    if (FAILED(hacker_query) || !hacker_device)
+        return;
+
+    bool adopted = false;
+    AcquireSRWLockExclusive(&lock_);
+    if (swap_chain != swap_chain_ &&
+        SwapChainArea(swap_chain) >= SwapChainArea(swap_chain_)) {
+        auto* previous = hacker_device_;
+        hacker_device_ = hacker_device;
+        hacker_device = nullptr;
+        swap_chain_ = swap_chain;
+        RememberDeviceLocked(hacker_device_);
+        adopted = true;
+        ReleaseSRWLockExclusive(&lock_);
+        if (previous)
+            static_cast<IUnknown*>(previous)->Release();
+    } else {
+        ReleaseSRWLockExclusive(&lock_);
+    }
+    if (hacker_device)
+        static_cast<IUnknown*>(hacker_device)->Release();
+    if (adopted) {
+        DiagnosticLog::Info(
+            "adopted the presenting HackerDevice for live probes");
+        capture_state_.store(
+            present_hooked_ ? AdapterCaptureState::Ready
+                            : AdapterCaptureState::WaitingForPresent,
+            std::memory_order_release);
+    }
+}
+
+void MigotoAdapter::HandleFrame(IDXGISwapChain* swap_chain) {
+    AdoptPresentingDevice(swap_chain);
     const auto restore_mode =
         capture_restore_hunting_.load(std::memory_order_acquire);
     if (restore_mode >= 0) {
@@ -754,7 +877,7 @@ void MigotoAdapter::HandleFrame(IDXGISwapChain*) {
     ProcessDrawProbeAtPresent(
         static_cast<std::uint32_t>(
             frame_count_.load(std::memory_order_relaxed)));
-    ExecutePendingCommand();
+    ExecutePendingCommand(false);
     const auto now = GetTickCount64();
     const auto previous =
         last_frame_tick_ms_.exchange(now, std::memory_order_acq_rel);
@@ -766,6 +889,13 @@ void MigotoAdapter::HandleFrame(IDXGISwapChain*) {
     frame_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
+void MigotoAdapter::HandlePostFrame(IDXGISwapChain*) {
+    // The official Present has returned, so its RunFrameActions() already ran.
+    // This is the only seam where arming frame analysis survives into the next
+    // frame instead of being stopped inside the same present.
+    ExecutePendingCommand(true);
+}
+
 CommandResult MigotoAdapter::CaptureLiveContextCommand(
     std::uint32_t request_id,
     void* hacker_device) {
@@ -775,18 +905,6 @@ CommandResult MigotoAdapter::CaptureLiveContextCommand(
             4,
             "snapshot_directory_unavailable",
             "analysis root is unavailable");
-    }
-
-    ID3D11Device1* device = nullptr;
-    const HRESULT query = static_cast<IUnknown*>(hacker_device)
-                              ->QueryInterface(
-                                  __uuidof(ID3D11Device1),
-                                  reinterpret_cast<void**>(&device));
-    if (FAILED(query) || !device) {
-        return ErrorResult(
-            4,
-            "d3d11_device_unavailable",
-            "HackerDevice does not expose ID3D11Device1");
     }
 
     LiveProbeSnapshot snapshot;
@@ -815,17 +933,69 @@ CommandResult MigotoAdapter::CaptureLiveContextCommand(
     if (snapshot.mcp_sha256.empty())
         snapshot.missing_fields.emplace_back("mcp_sha256");
 
-    std::string capture_error;
-    const bool captured = CaptureImmediateContext(
-        device, snapshot, capture_error);
-    device->Release();
-    if (!captured) {
+    std::vector<void*> candidates;
+    {
+        AcquireSRWLockShared(&lock_);
+        candidates = captured_devices_;
+        ReleaseSRWLockShared(&lock_);
+    }
+    if (candidates.empty() && hacker_device)
+        candidates.push_back(hacker_device);
+
+    // A game can expose more than one HackerDevice, and the one 3DMigoto
+    // reports as the immediate context can be a device that never draws. Every
+    // captured device is probed and the one with bound pipeline state wins.
+    LiveProbeSnapshot best;
+    std::size_t best_score = 0;
+    std::size_t best_index = 0;
+    std::size_t captured_count = 0;
+    std::string last_error =
+        candidates.empty() ? "no HackerDevice has been captured yet"
+                           : std::string();
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        ID3D11Device1* device = nullptr;
+        const HRESULT query = static_cast<IUnknown*>(candidates[index])
+                                  ->QueryInterface(
+                                      __uuidof(ID3D11Device1),
+                                      reinterpret_cast<void**>(&device));
+        if (FAILED(query) || !device) {
+            last_error = "HackerDevice does not expose ID3D11Device1";
+            continue;
+        }
+        LiveProbeSnapshot candidate = snapshot;
+        std::string capture_error;
+        const bool captured = CaptureImmediateContext(
+            device, candidate, capture_error);
+        device->Release();
+        if (!captured) {
+            last_error = capture_error;
+            continue;
+        }
+        ++captured_count;
+        const auto score =
+            candidate.shaders.size() + candidate.resources.size();
+        if (captured_count == 1 || score > best_score) {
+            best = std::move(candidate);
+            best_score = score;
+            best_index = index;
+        }
+    }
+    if (captured_count == 0) {
         DiagnosticLog::Error(
-            "live-context capture failed: " + capture_error);
+            "live-context capture failed: " + last_error);
         return ErrorResult(
             5,
             "live_context_capture_failed",
-            capture_error);
+            last_error);
+    }
+    snapshot = std::move(best);
+    if (best_score == 0) {
+        snapshot.warnings.emplace_back(
+            "no captured device reported bound shaders or resources");
+    } else if (best_index != 0) {
+        snapshot.warnings.emplace_back(
+            "the bound state came from device " +
+            std::to_string(best_index) + " rather than the first one");
     }
 
     const auto snapshot_directory = Utf8Path(directory);
@@ -958,11 +1128,12 @@ CommandResult MigotoAdapter::CaptureRuntimeVariablesCommand(
 
 bool MigotoAdapter::CaptureDrawProbeState(
     void* context,
+    void* drawing_context,
     LiveProbeSnapshot& snapshot,
     std::string& error) {
     auto* adapter = static_cast<MigotoAdapter*>(context);
-    if (!adapter || !adapter->draw_probe_device_) {
-        error = "draw probe device is unavailable";
+    if (!adapter) {
+        error = "draw probe adapter is unavailable";
         return false;
     }
 
@@ -986,8 +1157,20 @@ bool MigotoAdapter::CaptureDrawProbeState(
         snapshot.missing_fields.emplace_back("d3d11_sha256");
     if (snapshot.mcp_sha256.empty())
         snapshot.missing_fields.emplace_back("mcp_sha256");
-    return CaptureImmediateContext(
-        adapter->draw_probe_device_, snapshot, error);
+
+    ID3D11Device1* device = DeviceFromContext(drawing_context);
+    if (!device && adapter->draw_probe_device_) {
+        adapter->draw_probe_device_->AddRef();
+        device = adapter->draw_probe_device_;
+    }
+    if (!device) {
+        error = "draw probe device is unavailable";
+        return false;
+    }
+    const bool captured =
+        CaptureImmediateContext(device, snapshot, error);
+    device->Release();
+    return captured;
 }
 
 bool MigotoAdapter::StartLiveDrawProbe(
@@ -1173,11 +1356,35 @@ void MigotoAdapter::ProcessDrawProbeAtPresent(
     draw_probe_active_.store(false, std::memory_order_release);
 }
 
-void MigotoAdapter::ExecutePendingCommand() {
+void MigotoAdapter::ExecutePendingCommand(bool post_present) {
+    if (post_present) {
+        if (!deferred_frame_analysis_)
+            return;
+        const auto request = *deferred_frame_analysis_;
+        deferred_frame_analysis_.reset();
+        ExecuteCommand(&request);
+        return;
+    }
+
     const auto request = command_queue_.Claim();
     if (!request)
         return;
 
+    if (request->command == ControlCommand::FrameAnalysis) {
+        // Defer the analysis arm until the hooked Present returns: the
+        // official HackerSwapChain::Present runs RunFrameActions(), which
+        // stops a non-hold analysis at the end of that same present. Arming
+        // after it keeps G->analyse_frame set for the next complete frame, so
+        // its draws and resource dumps are recorded instead of only the
+        // present command-list log.
+        deferred_frame_analysis_ = request;
+        return;
+    }
+
+    ExecuteCommand(&*request);
+}
+
+void MigotoAdapter::ExecuteCommand(const QueuedCommand* request) {
     auto capabilities = Capabilities();
     auto* device = HackerDevice();
     if (!device) {

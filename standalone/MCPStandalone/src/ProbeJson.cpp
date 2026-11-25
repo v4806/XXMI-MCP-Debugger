@@ -24,10 +24,40 @@ std::string LimitedString(const std::string& value) {
     return value.substr(0, kMaxStringBytes);
 }
 
+// Snapshot strings come from game-side pointers, so a stray byte (a mask
+// streamed as a character, a non-UTF-8 debug name) must never reach the file:
+// consumers parse the JSON as strict UTF-8.
+std::size_t Utf8SequenceLength(
+    const std::string& value,
+    std::size_t offset) {
+    const auto lead = static_cast<unsigned char>(value[offset]);
+    std::size_t length = 0;
+    if (lead >= 0xC2 && lead <= 0xDF)
+        length = 2;
+    else if (lead >= 0xE0 && lead <= 0xEF)
+        length = 3;
+    else if (lead >= 0xF0 && lead <= 0xF4)
+        length = 4;
+    else
+        return 0;
+    if (offset + length > value.size())
+        return 0;
+    for (std::size_t index = 1; index < length; ++index) {
+        const auto continuation =
+            static_cast<unsigned char>(value[offset + index]);
+        if ((continuation & 0xC0) != 0x80)
+            return 0;
+    }
+    return length;
+}
+
 std::string JsonString(const std::string& value) {
+    const auto limited = LimitedString(value);
     std::ostringstream stream;
     stream << '"';
-    for (const unsigned char character : LimitedString(value)) {
+    for (std::size_t index = 0; index < limited.size(); ++index) {
+        const auto character =
+            static_cast<unsigned char>(limited[index]);
         switch (character) {
         case '"':
             stream << "\\\"";
@@ -51,13 +81,26 @@ std::string JsonString(const std::string& value) {
             stream << "\\t";
             break;
         default:
-            if (character < 0x20) {
+            if (character < 0x20 || character == 0x7F) {
                 stream << "\\u"
                        << std::hex << std::setw(4) << std::setfill('0')
                        << static_cast<unsigned>(character)
                        << std::dec << std::setfill(' ');
-            } else {
+            } else if (character < 0x80) {
                 stream << static_cast<char>(character);
+            } else {
+                const auto length = Utf8SequenceLength(limited, index);
+                if (length == 0) {
+                    stream << "\\u"
+                           << std::hex << std::setw(4) << std::setfill('0')
+                           << static_cast<unsigned>(character)
+                           << std::dec << std::setfill(' ');
+                } else {
+                    stream.write(
+                        limited.data() + index,
+                        static_cast<std::streamsize>(length));
+                    index += length - 1;
+                }
             }
         }
     }

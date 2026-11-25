@@ -699,7 +699,9 @@ std::string BlendStateDescription(
                << ",src_alpha=" << target.SrcBlendAlpha
                << ",dst_alpha=" << target.DestBlendAlpha
                << ",op_alpha=" << target.BlendOpAlpha
-               << ",write_mask=" << target.RenderTargetWriteMask;
+               << ",write_mask="
+               << static_cast<unsigned>(
+                      target.RenderTargetWriteMask);
     }
     return stream.str();
 }
@@ -718,9 +720,9 @@ std::string DepthStencilStateDescription(
            << ";stencil_enable="
            << (description.StencilEnable != FALSE)
            << ";stencil_read_mask="
-           << description.StencilReadMask
+           << static_cast<unsigned>(description.StencilReadMask)
            << ";stencil_write_mask="
-           << description.StencilWriteMask
+           << static_cast<unsigned>(description.StencilWriteMask)
            << ";front_fail="
            << description.FrontFace.StencilFailOp
            << ";front_depth_fail="

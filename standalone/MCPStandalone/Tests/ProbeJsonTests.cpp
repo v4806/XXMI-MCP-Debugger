@@ -21,6 +21,24 @@ TEST_CASE(ProbeJsonEscapesStringsAndReportsMissingFields) {
         std::string::npos);
 }
 
+TEST_CASE(ProbeJsonKeepsUtf8AndEscapesStrayBytes) {
+    const std::string utf8_name(
+        "\xE7\xBB\x9D\xE5\x8C\xBA", 6);
+    const std::string raw_mask("read=", 5);
+    const char raw_byte[] = {static_cast<char>(0xFF), '\0'};
+    LiveProbeSnapshot snapshot;
+    snapshot.kind = "live_context";
+    snapshot.config_path = utf8_name;
+    snapshot.states.push_back(
+        {"stencil_mask", raw_mask + raw_byte});
+
+    const auto json = SerializeProbeSnapshot(snapshot);
+
+    REQUIRE(json.find(utf8_name) != std::string::npos);
+    REQUIRE(json.find("read=\\u00ff") != std::string::npos);
+    REQUIRE(json.find(raw_mask + raw_byte) == std::string::npos);
+}
+
 TEST_CASE(ProbeJsonReportsCollectionLimits) {
     LiveProbeSnapshot snapshot;
     snapshot.resources.resize(129);

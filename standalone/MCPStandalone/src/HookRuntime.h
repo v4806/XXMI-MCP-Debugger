@@ -10,6 +10,12 @@ class ModuleImage;
 
 struct PresentHookCallbacks {
     void (*on_frame)(void* context, IDXGISwapChain* swap_chain) = nullptr;
+    // Runs after the hooked Present/Present1 returns, i.e. after the official
+    // HackerSwapChain::Present ran RunFrameActions(). Frame-analysis arming
+    // must happen here: RunFrameActions() clears G->analyse_frame at the end
+    // of the same Present, so arming before it would stop the analysis before
+    // a single draw is recorded.
+    void (*on_post_frame)(void* context, IDXGISwapChain* swap_chain) = nullptr;
     void* context = nullptr;
 };
 

@@ -7,6 +7,8 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "AdapterTypes.h"
 #include "CommandQueue.h"
@@ -41,6 +43,7 @@ public:
         bool present_hooked,
         AdapterCaptureState state);
     void ProcessPendingForTests();
+    void ProcessPostPresentForTests();
 #endif
 
 private:
@@ -49,12 +52,17 @@ private:
         ID3D11Device* device,
         IDXGISwapChain* swap_chain);
     static void OnFrame(void* context, IDXGISwapChain* swap_chain);
+    static void OnPostFrame(void* context, IDXGISwapChain* swap_chain);
 
     void HandleDeviceCreated(
         ID3D11Device* device,
         IDXGISwapChain* swap_chain);
     void HandleFrame(IDXGISwapChain* swap_chain);
-    void ExecutePendingCommand();
+    void HandlePostFrame(IDXGISwapChain* swap_chain);
+    void AdoptPresentingDevice(IDXGISwapChain* swap_chain);
+    void RememberDeviceLocked(void* hacker_device);
+    void ExecutePendingCommand(bool post_present);
+    void ExecuteCommand(const QueuedCommand* request);
     CommandResult CaptureLiveContextCommand(
         std::uint32_t request_id,
         void* hacker_device);
@@ -67,12 +75,14 @@ private:
     void ProcessDrawProbeAtPresent(std::uint32_t frame);
     static bool CaptureDrawProbeState(
         void* context,
+        void* drawing_context,
         LiveProbeSnapshot& snapshot,
         std::string& error);
     bool IsAdapterReady() const;
 
     mutable SRWLOCK lock_ = SRWLOCK_INIT;
     void* hacker_device_ = nullptr;
+    std::vector<void*> captured_devices_;
     IDXGISwapChain* swap_chain_ = nullptr;
     ResolvedMigotoCapabilities capabilities_;
     std::atomic<std::uint64_t> frame_count_{0};
@@ -81,6 +91,10 @@ private:
     std::atomic<std::uint64_t> start_tick_ms_{0};
     std::atomic<std::uint64_t> last_frame_tick_ms_{0};
     CommandQueue command_queue_;
+    // FrameAnalysis is claimed during the pre-present seam but only executed
+    // after the hooked Present returns, because 3DMigoto's RunFrameActions()
+    // clears G->analyse_frame inside the same Present call.
+    std::optional<QueuedCommand> deferred_frame_analysis_;
     std::atomic<int> capture_restore_hunting_{-1};
     std::atomic<AdapterCaptureState> capture_state_{
         AdapterCaptureState::NotStarted};

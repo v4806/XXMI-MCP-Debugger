@@ -101,6 +101,13 @@ Each JSON file is capped at 2 MiB and the newest 20 files are retained.
 requested capture and leaves it pass-through until the next Present can remove
 it safely.
 
+A game can expose more than one `HackerDevice`, and the device 3DMigoto reports
+as the immediate context is not always the one that renders. A draw probe
+therefore accepts a draw from any immediate context and reads the pipeline state
+from the context that drew, while a live-context snapshot probes every captured
+device and keeps the one with bound pipeline state. Snapshot strings are
+validated as UTF-8, so a stray mask byte can never make the JSON unreadable.
+
 The MCP endpoint uses a local Windows named pipe:
 
 ```text

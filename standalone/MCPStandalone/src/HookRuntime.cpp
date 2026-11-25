@@ -283,6 +283,12 @@ void NotifyFrame(IDXGISwapChain* swap_chain) {
         record->callbacks.on_frame(record->callbacks.context, swap_chain);
 }
 
+void NotifyPostFrame(IDXGISwapChain* swap_chain) {
+    auto* record = FindPresentRecord(swap_chain);
+    if (record && record->callbacks.on_post_frame)
+        record->callbacks.on_post_frame(record->callbacks.context, swap_chain);
+}
+
 HRESULT STDMETHODCALLTYPE HookedPresent(
     IDXGISwapChain* swap_chain,
     UINT sync_interval,
@@ -290,9 +296,14 @@ HRESULT STDMETHODCALLTYPE HookedPresent(
     auto* record = FindPresentRecord(swap_chain);
     if (!record || !record->original_present)
         return E_FAIL;
-    if ((flags & DXGI_PRESENT_TEST) == 0)
+    const bool notify = (flags & DXGI_PRESENT_TEST) == 0;
+    if (notify)
         NotifyFrame(swap_chain);
-    return record->original_present(swap_chain, sync_interval, flags);
+    const HRESULT hr =
+        record->original_present(swap_chain, sync_interval, flags);
+    if (notify)
+        NotifyPostFrame(swap_chain);
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE HookedPresent1(
@@ -304,11 +315,14 @@ HRESULT STDMETHODCALLTYPE HookedPresent1(
         FindPresentRecord(reinterpret_cast<IDXGISwapChain*>(swap_chain));
     if (!record || !record->original_present1)
         return E_FAIL;
-    if ((flags & DXGI_PRESENT_TEST) == 0) {
+    const bool notify = (flags & DXGI_PRESENT_TEST) == 0;
+    if (notify)
         NotifyFrame(reinterpret_cast<IDXGISwapChain*>(swap_chain));
-    }
-    return record->original_present1(
+    const HRESULT hr = record->original_present1(
         swap_chain, sync_interval, flags, parameters);
+    if (notify)
+        NotifyPostFrame(reinterpret_cast<IDXGISwapChain*>(swap_chain));
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE HookedPresentFunction(
@@ -317,13 +331,21 @@ HRESULT STDMETHODCALLTYPE HookedPresentFunction(
     UINT flags) {
     if (!g_original_present_function)
         return E_FAIL;
-    if ((flags & DXGI_PRESENT_TEST) == 0 &&
-        g_present_function_callbacks.on_frame) {
+    const bool notify =
+        (flags & DXGI_PRESENT_TEST) == 0 &&
+        g_present_function_callbacks.on_frame;
+    if (notify) {
         g_present_function_callbacks.on_frame(
             g_present_function_callbacks.context, swap_chain);
     }
-    return g_original_present_function(
-        swap_chain, sync_interval, flags);
+    const HRESULT hr =
+        g_original_present_function(swap_chain, sync_interval, flags);
+    if ((flags & DXGI_PRESENT_TEST) == 0 &&
+        g_present_function_callbacks.on_post_frame) {
+        g_present_function_callbacks.on_post_frame(
+            g_present_function_callbacks.context, swap_chain);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE HookedPresent1Function(
@@ -339,8 +361,15 @@ HRESULT STDMETHODCALLTYPE HookedPresent1Function(
             g_present_function_callbacks.context,
             reinterpret_cast<IDXGISwapChain*>(swap_chain));
     }
-    return g_original_present1_function(
+    const HRESULT hr = g_original_present1_function(
         swap_chain, sync_interval, flags, parameters);
+    if ((flags & DXGI_PRESENT_TEST) == 0 &&
+        g_present_function_callbacks.on_post_frame) {
+        g_present_function_callbacks.on_post_frame(
+            g_present_function_callbacks.context,
+            reinterpret_cast<IDXGISwapChain*>(swap_chain));
+    }
+    return hr;
 }
 
 void NotifyDeviceCreated(

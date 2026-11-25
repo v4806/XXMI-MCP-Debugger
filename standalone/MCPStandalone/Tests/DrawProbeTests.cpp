@@ -74,12 +74,14 @@ private:
 
 bool CaptureAfterOriginal(
     void* context,
+    void*,
     LiveProbeSnapshot&,
     std::string&) {
     return static_cast<FakeBeforeDrawHook*>(context)->original_called();
 }
 
 bool ThrowDuringCapture(
+    void*,
     void*,
     LiveProbeSnapshot&,
     std::string&) {
@@ -100,6 +102,44 @@ TEST_CASE(BeforeDrawProbeCapturesOnlyTargetContext) {
     REQUIRE(probe.State() == DrawProbeState::Armed);
     hook.Invoke(target_context, nullptr);
     REQUIRE(probe.State() == DrawProbeState::Captured);
+}
+
+TEST_CASE(BeforeDrawProbeFallsBackToThePresentingContext) {
+    FakeBeforeDrawHook hook;
+    BeforeDrawProbeController probe(hook);
+    std::string error;
+    void* other_context = reinterpret_cast<void*>(0x3000);
+
+    REQUIRE(probe.Arm(
+        hook.Original(),
+        reinterpret_cast<void*>(0x2000),
+        10,
+        error));
+    hook.Invoke(other_context, nullptr);
+    REQUIRE(probe.State() == DrawProbeState::Armed);
+    probe.OnPresent(11);
+    REQUIRE(probe.State() == DrawProbeState::Captured);
+    REQUIRE(
+        probe.Snapshot().context_pointer ==
+        reinterpret_cast<std::uintptr_t>(other_context));
+    REQUIRE(!probe.Snapshot().warnings.empty());
+}
+
+TEST_CASE(BeforeDrawProbeFallbackNeverOverridesTheProbeContext) {
+    FakeBeforeDrawHook hook;
+    BeforeDrawProbeController probe(hook);
+    std::string error;
+    void* target_context = reinterpret_cast<void*>(0x2000);
+
+    REQUIRE(probe.Arm(
+        hook.Original(), target_context, 10, error));
+    hook.Invoke(reinterpret_cast<void*>(0x3000), nullptr);
+    hook.Invoke(target_context, nullptr);
+    REQUIRE(probe.State() == DrawProbeState::Captured);
+    REQUIRE(
+        probe.Snapshot().context_pointer ==
+        reinterpret_cast<std::uintptr_t>(target_context));
+    REQUIRE(probe.Snapshot().warnings.empty());
 }
 
 TEST_CASE(BeforeDrawProbeTimesOutAndUnhooks) {
