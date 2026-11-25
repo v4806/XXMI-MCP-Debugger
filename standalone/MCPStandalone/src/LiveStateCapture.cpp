@@ -828,9 +828,10 @@ bool CaptureImmediateContextImpl(
                 count)) {
             AddMissing(
                 snapshot,
-                "input_elements.official_layout_abi");
+                "input_elements.layout");
             snapshot.warnings.emplace_back(
-                "input layout ABI probe failed; declaration omitted");
+                "input layout elements could not be read; declaration "
+                "omitted");
         } else {
             if (count > kMaxInputElements)
                 AddLimit(snapshot, "input_elements");
@@ -1196,44 +1197,150 @@ bool InvokeCaptureImmediateContext(
     }
 }
 
-class HackerInputLayoutProbe : public ID3D11InputLayout {
-public:
-    virtual ID3D11InputLayout* GetOrigInputLayout() const = 0;
-    virtual const void* GetShaderSignature() const = 0;
-    virtual SIZE_T GetShaderSignatureSize() const = 0;
-    virtual UINT GetElementCount() const = 0;
-    virtual const D3D11_INPUT_ELEMENT_DESC* GetElements() const = 0;
+// 3DMigoto exposes the declared elements through non-virtual members of
+// HackerInputLayout, so they cannot be called through a probe interface. The
+// element vector is read from the object image instead and every field is
+// validated first, so an unexpected layout fails closed instead of returning
+// garbage.
+struct InputElementVector {
+    const D3D11_INPUT_ELEMENT_DESC* elements = nullptr;
+    std::size_t count = 0;
+    std::size_t offset = 0;
 };
 
-struct CopyInputLayoutElementsCall {
-    const ID3D11InputLayout* layout = nullptr;
-    D3D11_INPUT_ELEMENT_DESC* elements = nullptr;
-    std::size_t capacity = 0;
-    UINT count = 0;
-    bool result = false;
-};
-
-void InvokeProbeHackerInputLayoutElements(
-    CopyInputLayoutElementsCall& call) {
-    __try {
-        const auto* layout =
-            static_cast<const HackerInputLayoutProbe*>(call.layout);
-        const auto source_count = layout->GetElementCount();
-        const auto* source = layout->GetElements();
-        if (source_count >
-                D3D11_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT ||
-            (source_count != 0 && !source)) {
-            return;
+bool IsReadableRange(const void* address, std::size_t size) {
+    if (!address)
+        return false;
+    auto remaining = size;
+    auto current = reinterpret_cast<std::uintptr_t>(address);
+    while (remaining != 0) {
+        MEMORY_BASIC_INFORMATION information = {};
+        if (VirtualQuery(
+                reinterpret_cast<const void*>(current),
+                &information,
+                sizeof(information)) == 0) {
+            return false;
         }
-        call.count = static_cast<UINT>(
-            std::min<std::size_t>(source_count, call.capacity));
-        for (UINT index = 0; index < call.count; ++index)
-            call.elements[index] = source[index];
-        call.result = true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        call.count = 0;
-        call.result = false;
+        if (information.State != MEM_COMMIT ||
+            (information.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            return false;
+        }
+        const auto region_end =
+            reinterpret_cast<std::uintptr_t>(information.BaseAddress) +
+            information.RegionSize;
+        if (region_end <= current)
+            return false;
+        const auto available = region_end - current;
+        if (available >= remaining)
+            return true;
+        remaining -= available;
+        current = region_end;
     }
+    return true;
+}
+
+bool ReadPointerValue(const void* address, std::uintptr_t& value) {
+    return ReadProcessMemory(
+               GetCurrentProcess(),
+               address,
+               &value,
+               sizeof(value),
+               nullptr) != FALSE;
+}
+
+bool IsPlausibleInputElement(
+    const D3D11_INPUT_ELEMENT_DESC& element) {
+    if (!element.SemanticName)
+        return false;
+    if (!IsReadableRange(element.SemanticName, 2))
+        return false;
+    std::size_t length = 0;
+    while (length < 32) {
+        if (!IsReadableRange(element.SemanticName + length, 1))
+            return false;
+        const auto character =
+            static_cast<unsigned char>(element.SemanticName[length]);
+        if (character == 0)
+            break;
+        if (character < 0x20 || character > 0x7E)
+            return false;
+        ++length;
+    }
+    if (length == 0 || length >= 32)
+        return false;
+    if (element.InputSlot >= D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
+        return false;
+    if (element.InputSlotClass > D3D11_INPUT_PER_INSTANCE_DATA)
+        return false;
+    if (element.InstanceDataStepRate > 0xFFFF)
+        return false;
+    constexpr int kMaxDeclaredFormat = 200;
+    if (element.Format <= DXGI_FORMAT_UNKNOWN ||
+        static_cast<int>(element.Format) > kMaxDeclaredFormat) {
+        return false;
+    }
+    return true;
+}
+
+bool TryReadInputElementVector(
+    const void* layout,
+    std::size_t offset,
+    InputElementVector& result) {
+    __try {
+        const auto* base =
+            static_cast<const std::uint8_t*>(layout) + offset;
+        std::uintptr_t begin = 0;
+        std::uintptr_t end = 0;
+        std::uintptr_t capacity = 0;
+        if (!ReadPointerValue(base, begin) ||
+            !ReadPointerValue(base + sizeof(void*), end) ||
+            !ReadPointerValue(base + 2 * sizeof(void*), capacity)) {
+            return false;
+        }
+        if (begin == 0 || end < begin || capacity < end)
+            return false;
+        const auto bytes = static_cast<std::size_t>(end - begin);
+        if (bytes == 0 ||
+            bytes % sizeof(D3D11_INPUT_ELEMENT_DESC) != 0) {
+            return false;
+        }
+        const auto count = bytes / sizeof(D3D11_INPUT_ELEMENT_DESC);
+        if (count > D3D11_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT)
+            return false;
+        const auto* elements =
+            reinterpret_cast<const D3D11_INPUT_ELEMENT_DESC*>(begin);
+        if (!IsReadableRange(elements, bytes))
+            return false;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (!IsPlausibleInputElement(elements[index]))
+                return false;
+        }
+        result.elements = elements;
+        result.count = count;
+        result.offset = offset;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool FindInputElementVector(
+    const void* layout,
+    InputElementVector& result) {
+    // MSVC x64 image of 3DMigoto's HackerInputLayout: vptr, mRefCount,
+    // mOrigLayout, mShaderSignature, mLayoutHash, mElements, mSemanticNames.
+    constexpr std::size_t kExpectedElementVectorOffset = 56;
+    if (TryReadInputElementVector(
+            layout, kExpectedElementVectorOffset, result)) {
+        return true;
+    }
+    for (std::size_t offset = 8; offset <= 112; offset += sizeof(void*)) {
+        if (offset == kExpectedElementVectorOffset)
+            continue;
+        if (TryReadInputElementVector(layout, offset, result))
+            return true;
+    }
+    return false;
 }
 
 }  // namespace
@@ -1542,16 +1649,26 @@ bool ProbeHackerInputLayoutElements(
     std::size_t capacity,
     UINT& count) {
     count = 0;
-    if (!layout || (!elements && capacity != 0))
+    if (!layout)
         return false;
-    CopyInputLayoutElementsCall call = {
-        layout,
-        elements,
-        capacity,
-    };
-    InvokeProbeHackerInputLayoutElements(call);
-    count = call.count;
-    return call.result;
+    InputElementVector found;
+    if (!FindInputElementVector(layout, found))
+        return false;
+    const auto available = std::min<std::size_t>(found.count, capacity);
+    if (available != 0) {
+        if (!elements)
+            return false;
+        if (!ReadProcessMemory(
+                GetCurrentProcess(),
+                found.elements,
+                elements,
+                available * sizeof(D3D11_INPUT_ELEMENT_DESC),
+                nullptr)) {
+            return false;
+        }
+    }
+    count = static_cast<UINT>(available);
+    return true;
 }
 
 bool CaptureImmediateContext(

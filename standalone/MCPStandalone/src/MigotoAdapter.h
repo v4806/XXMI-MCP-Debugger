@@ -61,6 +61,9 @@ private:
     void HandlePostFrame(IDXGISwapChain* swap_chain);
     void AdoptPresentingDevice(IDXGISwapChain* swap_chain);
     void RememberDeviceLocked(void* hacker_device);
+    void RememberDrawingContext(void* drawing_context);
+    ID3D11DeviceContext1* SelectActiveContext();
+    void MeasureScreenSize(IDXGISwapChain* swap_chain);
     void ExecutePendingCommand(bool post_present);
     void ExecuteCommand(const QueuedCommand* request);
     CommandResult CaptureLiveContextCommand(
@@ -111,9 +114,13 @@ private:
     BeforeDrawProbeController* draw_probe_ = nullptr;
     ID3D11Device1* draw_probe_device_ = nullptr;
     ID3D11DeviceContext1* draw_probe_context_ = nullptr;
+    ID3D11DeviceContext1* drawing_context_ = nullptr;
     std::uint32_t draw_probe_request_id_ = 0;
     std::atomic<bool> draw_probe_active_{false};
     std::atomic<bool> live_draw_available_{false};
+    std::atomic<std::uint32_t> screen_width_{0};
+    std::atomic<std::uint32_t> screen_height_{0};
+    std::atomic<bool> screen_size_failure_logged_{false};
     bool present_hooked_ = false;
     bool running_ = false;
 };

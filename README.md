@@ -108,6 +108,16 @@ from the context that drew, while a live-context snapshot probes every captured
 device and keeps the one with bound pipeline state. Snapshot strings are
 validated as UTF-8, so a stray mask byte can never make the JSON unreadable.
 
+Because a game may create the device and the swap chain separately, the swap
+chain that reaches `Present` is adopted even when its device cannot be queried.
+That swap chain is also the only reliable source of the screen size, since a
+swap chain created with a 0x0 description reports 0 from `GetDesc`.
+
+The declared input layout is read from the `HackerInputLayout` object image
+rather than through its methods, which are not virtual. Every element is
+validated before it is reported, so an object of an unexpected shape fails
+closed instead of producing garbage.
+
 The MCP endpoint uses a local Windows named pipe:
 
 ```text

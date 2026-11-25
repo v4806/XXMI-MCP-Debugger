@@ -1,17 +1,22 @@
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "LiveStateCapture.h"
 #include "TestHarness.h"
 
 namespace {
 
-class FakeProbeInputLayout final : public ID3D11InputLayout {
+// Mirrors the member order of 3DMigoto's HackerInputLayout, whose element list
+// is private and non-virtual, so the probe can only reach it through the object
+// image.
+class FakeHackerInputLayout final : public ID3D11InputLayout {
 public:
-    explicit FakeProbeInputLayout(
+    explicit FakeHackerInputLayout(
         std::vector<D3D11_INPUT_ELEMENT_DESC> elements)
         : elements_(std::move(elements)) {}
 
@@ -21,10 +26,10 @@ public:
         return E_NOINTERFACE;
     }
     ULONG STDMETHODCALLTYPE AddRef() override {
-        return ++references_;
+        return ++reference_count_;
     }
     ULONG STDMETHODCALLTYPE Release() override {
-        return --references_;
+        return --reference_count_;
     }
     void STDMETHODCALLTYPE GetDevice(
         ID3D11Device**) override {}
@@ -46,25 +51,13 @@ public:
         return E_NOTIMPL;
     }
 
-    virtual ID3D11InputLayout* GetOrigInputLayout() const {
-        return nullptr;
-    }
-    virtual const void* GetShaderSignature() const {
-        return nullptr;
-    }
-    virtual SIZE_T GetShaderSignatureSize() const {
-        return 0;
-    }
-    virtual UINT GetElementCount() const {
-        return static_cast<UINT>(elements_.size());
-    }
-    virtual const D3D11_INPUT_ELEMENT_DESC* GetElements() const {
-        return elements_.data();
-    }
-
 private:
-    ULONG references_ = 1;
+    std::atomic<ULONG> reference_count_{1};
+    ID3D11InputLayout* origin_ = nullptr;
+    std::vector<std::uint8_t> signature_;
+    std::uint64_t layout_hash_ = 0;
     std::vector<D3D11_INPUT_ELEMENT_DESC> elements_;
+    std::vector<std::string> semantic_names_;
 };
 
 }  // namespace
@@ -103,7 +96,7 @@ TEST_CASE(LiveStateCaptureCopiesOfficialInputLayoutDeclaration) {
         D3D11_INPUT_PER_VERTEX_DATA,
         0,
     }};
-    FakeProbeInputLayout layout(
+    FakeHackerInputLayout layout(
         std::vector<D3D11_INPUT_ELEMENT_DESC>(
             source.begin(), source.end()));
     std::array<D3D11_INPUT_ELEMENT_DESC, 32> elements = {};
@@ -117,6 +110,14 @@ TEST_CASE(LiveStateCaptureCopiesOfficialInputLayoutDeclaration) {
     REQUIRE_EQ(
         elements[0].Format,
         DXGI_FORMAT_R32G32B32_FLOAT);
+}
+
+TEST_CASE(LiveStateCaptureRejectsAnUnreadableInputLayout) {
+    std::array<D3D11_INPUT_ELEMENT_DESC, 32> elements = {};
+    UINT count = 1;
+    REQUIRE(!ProbeHackerInputLayoutElements(
+        nullptr, elements.data(), elements.size(), count));
+    REQUIRE_EQ(count, 0U);
 }
 
 TEST_CASE(LiveStateCaptureRetainsNewestSnapshotFiles) {

@@ -41,6 +41,86 @@ std::uint64_t SwapChainArea(IDXGISwapChain* swap_chain) {
            static_cast<std::uint64_t>(description.BufferDesc.Height);
 }
 
+// Swap chains created with a 0x0 buffer description keep reporting 0 from
+// GetDesc, so the back buffer itself is the authoritative size.
+void MeasureSwapChain(
+    IDXGISwapChain* swap_chain,
+    std::uint32_t& width,
+    std::uint32_t& height,
+    std::string& detail) {
+    width = 0;
+    height = 0;
+    detail.clear();
+    if (!swap_chain) {
+        detail = "swapchain=null";
+        return;
+    }
+    DXGI_SWAP_CHAIN_DESC description = {};
+    const auto desc_result = swap_chain->GetDesc(&description);
+    std::ostringstream stream;
+    stream << "GetDesc=0x" << std::hex
+           << static_cast<unsigned long>(desc_result) << std::dec
+           << " desc=" << description.BufferDesc.Width << 'x'
+           << description.BufferDesc.Height;
+    if (SUCCEEDED(desc_result)) {
+        width = description.BufferDesc.Width;
+        height = description.BufferDesc.Height;
+    }
+    if (width == 0 || height == 0) {
+        ID3D11Texture2D* back_buffer = nullptr;
+        const auto buffer_result = swap_chain->GetBuffer(
+            0,
+            __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void**>(&back_buffer));
+        stream << " GetBuffer=0x" << std::hex
+               << static_cast<unsigned long>(buffer_result) << std::dec;
+        if (SUCCEEDED(buffer_result) && back_buffer) {
+            D3D11_TEXTURE2D_DESC texture = {};
+            back_buffer->GetDesc(&texture);
+            back_buffer->Release();
+            stream << " buffer=" << texture.Width << 'x'
+                   << texture.Height;
+            width = texture.Width;
+            height = texture.Height;
+        }
+    }
+    if ((width == 0 || height == 0) && description.OutputWindow) {
+        RECT client = {};
+        if (GetClientRect(description.OutputWindow, &client)) {
+            stream << " client=" << (client.right - client.left) << 'x'
+                   << (client.bottom - client.top);
+            width = static_cast<std::uint32_t>(
+                std::max<LONG>(0, client.right - client.left));
+            height = static_cast<std::uint32_t>(
+                std::max<LONG>(0, client.bottom - client.top));
+        }
+    }
+    detail = stream.str();
+}
+
+int BoundStateScore(ID3D11DeviceContext1* context) {
+    int score = 0;
+    ID3D11VertexShader* vertex_shader = nullptr;
+    context->VSGetShader(&vertex_shader, nullptr, nullptr);
+    if (vertex_shader) {
+        ++score;
+        vertex_shader->Release();
+    }
+    ID3D11PixelShader* pixel_shader = nullptr;
+    context->PSGetShader(&pixel_shader, nullptr, nullptr);
+    if (pixel_shader) {
+        ++score;
+        pixel_shader->Release();
+    }
+    ID3D11RenderTargetView* render_target = nullptr;
+    context->OMGetRenderTargets(1, &render_target, nullptr);
+    if (render_target) {
+        score += 4;
+        render_target->Release();
+    }
+    return score;
+}
+
 ID3D11Device1* DeviceFromContext(void* drawing_context) {
     if (!drawing_context)
         return nullptr;
@@ -468,6 +548,10 @@ void MigotoAdapter::Shutdown() {
     for (auto* device : captured_devices_)
         static_cast<IUnknown*>(device)->Release();
     captured_devices_.clear();
+    if (drawing_context_) {
+        drawing_context_->Release();
+        drawing_context_ = nullptr;
+    }
     if (hacker_device_) {
         static_cast<IUnknown*>(hacker_device_)->Release();
         hacker_device_ = nullptr;
@@ -594,13 +678,11 @@ bool MigotoAdapter::IsAdapterReady() const {
 AdapterSnapshot MigotoAdapter::Snapshot() const {
     AdapterSnapshot snapshot;
     ResolvedMigotoCapabilities capabilities;
-    IDXGISwapChain* swap_chain = nullptr;
     void* hacker_device = nullptr;
     bool present_hooked = false;
     {
         AcquireSRWLockShared(&lock_);
         capabilities = capabilities_;
-        swap_chain = swap_chain_;
         hacker_device = hacker_device_;
         present_hooked = present_hooked_;
         snapshot.process_path = process_path_;
@@ -658,13 +740,10 @@ AdapterSnapshot MigotoAdapter::Snapshot() const {
     snapshot.capture_restore_hunting =
         capture_restore_hunting_.load(std::memory_order_acquire);
 
-    if (swap_chain) {
-        DXGI_SWAP_CHAIN_DESC description = {};
-        if (SUCCEEDED(swap_chain->GetDesc(&description))) {
-            snapshot.screen_width = description.BufferDesc.Width;
-            snapshot.screen_height = description.BufferDesc.Height;
-        }
-    }
+    snapshot.screen_width =
+        screen_width_.load(std::memory_order_relaxed);
+    snapshot.screen_height =
+        screen_height_.load(std::memory_order_relaxed);
 
     if (capabilities.globals.has_value()) {
         const auto base = *capabilities.globals;
@@ -753,6 +832,8 @@ void MigotoAdapter::HandleDeviceCreated(
     if (swap_chain)
         swap_chain_ = swap_chain;
     ReleaseSRWLockExclusive(&lock_);
+    if (swap_chain)
+        MeasureScreenSize(swap_chain);
     capture_state_.store(
         present_hooked_
             ? AdapterCaptureState::Ready
@@ -771,6 +852,91 @@ void MigotoAdapter::HandleDeviceCreated(
             "HackerDevice capture recovered after the timeout");
     }
 
+}
+
+ID3D11DeviceContext1* MigotoAdapter::SelectActiveContext() {
+    std::vector<void*> devices;
+    {
+        AcquireSRWLockShared(&lock_);
+        auto* remembered = drawing_context_;
+        if (remembered) {
+            remembered->AddRef();
+            return remembered;
+        }
+        devices = captured_devices_;
+        ReleaseSRWLockShared(&lock_);
+    }
+
+    // Nothing has drawn yet in this session, so the rendering context is
+    // whichever captured device still has pipeline state bound.
+    ID3D11DeviceContext1* best = nullptr;
+    int best_score = -1;
+    for (void* entry : devices) {
+        ID3D11Device1* device = nullptr;
+        const auto query = static_cast<IUnknown*>(entry)->QueryInterface(
+            __uuidof(ID3D11Device1),
+            reinterpret_cast<void**>(&device));
+        if (FAILED(query) || !device)
+            continue;
+        ID3D11DeviceContext1* context = nullptr;
+        device->GetImmediateContext1(&context);
+        device->Release();
+        if (!context)
+            continue;
+        const auto score = BoundStateScore(context);
+        if (score > best_score) {
+            if (best)
+                best->Release();
+            best = context;
+            best_score = score;
+        } else {
+            context->Release();
+        }
+    }
+    if (best)
+        RememberDrawingContext(reinterpret_cast<void*>(best));
+    return best;
+}
+
+void MigotoAdapter::MeasureScreenSize(IDXGISwapChain* swap_chain) {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::string detail;
+    MeasureSwapChain(swap_chain, width, height, detail);
+    screen_width_.store(width, std::memory_order_relaxed);
+    screen_height_.store(height, std::memory_order_relaxed);
+    if (width != 0 && height != 0) {
+        if (screen_size_failure_logged_.exchange(
+                false, std::memory_order_acq_rel)) {
+            DiagnosticLog::Info(
+                "screen size resolved: " + detail);
+        }
+        return;
+    }
+    if (!screen_size_failure_logged_.exchange(
+            true, std::memory_order_acq_rel)) {
+        DiagnosticLog::Warn(
+            "screen size is still unknown: " + detail);
+    }
+}
+
+void MigotoAdapter::RememberDrawingContext(void* drawing_context) {
+    if (!drawing_context)
+        return;
+    auto* context =
+        static_cast<ID3D11DeviceContext1*>(drawing_context);
+    AcquireSRWLockShared(&lock_);
+    const bool known = drawing_context_ == context;
+    ReleaseSRWLockShared(&lock_);
+    if (known)
+        return;
+    context->AddRef();
+    AcquireSRWLockExclusive(&lock_);
+    auto* previous = drawing_context_;
+    drawing_context_ = context;
+    ReleaseSRWLockExclusive(&lock_);
+    if (previous)
+        previous->Release();
 }
 
 void MigotoAdapter::RememberDeviceLocked(void* hacker_device) {
@@ -793,34 +959,49 @@ void MigotoAdapter::AdoptPresentingDevice(IDXGISwapChain* swap_chain) {
     AcquireSRWLockShared(&lock_);
     const bool known = swap_chain == swap_chain_;
     ReleaseSRWLockShared(&lock_);
-
     if (known)
         return;
 
+    // The swap chain that reaches Present is authoritative even when its
+    // device cannot be queried, which happens for a game that creates the
+    // device and the swap chain separately.
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::string detail;
+    MeasureSwapChain(swap_chain, width, height, detail);
+    const auto new_area =
+        static_cast<std::uint64_t>(width) * height;
+    const auto current_area =
+        static_cast<std::uint64_t>(
+            screen_width_.load(std::memory_order_relaxed)) *
+        static_cast<std::uint64_t>(
+            screen_height_.load(std::memory_order_relaxed));
+    if (new_area < current_area)
+        return;
+
+    IUnknown* hacker_device = nullptr;
     ID3D11Device* device = nullptr;
     const auto device_query = swap_chain->GetDevice(
         __uuidof(ID3D11Device),
         reinterpret_cast<void**>(&device));
-    if (FAILED(device_query) || !device)
-        return;
-    IUnknown* hacker_device = nullptr;
-    const auto hacker_query = device->QueryInterface(
-        kHackerDeviceIid,
-        reinterpret_cast<void**>(&hacker_device));
-    device->Release();
-    if (FAILED(hacker_query) || !hacker_device)
-        return;
+    if (SUCCEEDED(device_query) && device) {
+        if (FAILED(device->QueryInterface(
+                kHackerDeviceIid,
+                reinterpret_cast<void**>(&hacker_device)))) {
+            hacker_device = nullptr;
+        }
+        device->Release();
+    }
 
-    bool adopted = false;
+    bool adopted_device = false;
     AcquireSRWLockExclusive(&lock_);
-    if (swap_chain != swap_chain_ &&
-        SwapChainArea(swap_chain) >= SwapChainArea(swap_chain_)) {
+    swap_chain_ = swap_chain;
+    if (hacker_device) {
         auto* previous = hacker_device_;
         hacker_device_ = hacker_device;
         hacker_device = nullptr;
-        swap_chain_ = swap_chain;
         RememberDeviceLocked(hacker_device_);
-        adopted = true;
+        adopted_device = true;
         ReleaseSRWLockExclusive(&lock_);
         if (previous)
             static_cast<IUnknown*>(previous)->Release();
@@ -829,18 +1010,25 @@ void MigotoAdapter::AdoptPresentingDevice(IDXGISwapChain* swap_chain) {
     }
     if (hacker_device)
         static_cast<IUnknown*>(hacker_device)->Release();
-    if (adopted) {
-        DiagnosticLog::Info(
-            "adopted the presenting HackerDevice for live probes");
-        capture_state_.store(
-            present_hooked_ ? AdapterCaptureState::Ready
-                            : AdapterCaptureState::WaitingForPresent,
-            std::memory_order_release);
-    }
+
+    screen_width_.store(width, std::memory_order_relaxed);
+    screen_height_.store(height, std::memory_order_relaxed);
+    DiagnosticLog::Info(
+        "adopted the presenting swap chain"
+        + std::string(adopted_device ? " and device" : "") + ": " +
+        detail);
+    capture_state_.store(
+        present_hooked_ ? AdapterCaptureState::Ready
+                        : AdapterCaptureState::WaitingForPresent,
+        std::memory_order_release);
 }
 
 void MigotoAdapter::HandleFrame(IDXGISwapChain* swap_chain) {
     AdoptPresentingDevice(swap_chain);
+    if (screen_width_.load(std::memory_order_relaxed) == 0 &&
+        frame_count_.load(std::memory_order_relaxed) % 120 == 0) {
+        MeasureScreenSize(SwapChain());
+    }
     const auto restore_mode =
         capture_restore_hunting_.load(std::memory_order_acquire);
     if (restore_mode >= 0) {
@@ -1158,6 +1346,7 @@ bool MigotoAdapter::CaptureDrawProbeState(
     if (snapshot.mcp_sha256.empty())
         snapshot.missing_fields.emplace_back("mcp_sha256");
 
+    adapter->RememberDrawingContext(drawing_context);
     ID3D11Device1* device = DeviceFromContext(drawing_context);
     if (!device && adapter->draw_probe_device_) {
         adapter->draw_probe_device_->AddRef();
@@ -1198,7 +1387,11 @@ bool MigotoAdapter::StartLiveDrawProbe(
     }
 
     ID3D11DeviceContext1* context = nullptr;
-    device->GetImmediateContext1(&context);
+    // A draw already seen in this session tells us which immediate context
+    // renders, which the captured HackerDevice does not always.
+    context = SelectActiveContext();
+    if (!context)
+        device->GetImmediateContext1(&context);
     if (!context) {
         device->Release();
         error = "could not obtain the immediate HackerContext";
