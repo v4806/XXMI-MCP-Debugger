@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "XXMI MCP 调试器",
+    "description": "把运行中的 XXMI/3DMigoto 实例接入 DSH，提供日志、帧分析、live D3D11 探针以及配置/着色器重载等 mcp__xxmi-debug__* 工具。",
+    "detail": "docs/DETAIL.md"
+  }
+}

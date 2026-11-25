@@ -1,0 +1,26 @@
+# dsh-xxmi-mcp: connect the xxmi-debug MCP server (stdio).
+#
+# server.py comes from the Codex plugin in this repository
+# (plugins/xxmi-debug/mcp/server.py) with one addition: _render_tool_text()
+# appends the structured result to the text content block, because DSH renders
+# only text while Codex reads structuredContent. The Codex .mcp.json used
+# ${PLUGIN_ROOT}; DSH resolves the same file through dshHomePath() below. The
+# server reads newline-delimited JSON-RPC on stdin and only talks to the
+# game-side mcp.dll over a local named pipe.
+- insert:
+    - id: mcp-xxmi-debug
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: xxmi-debug
+        transport: stdio
+        command: 'C:/Program Files/Python/python.exe'
+        args:
+          - '-u'
+          - !!js dshHomePath('plugins/dsh-xxmi-mcp/mcp/server.py')
+        cwd: !!js dshHomePath('plugins/dsh-xxmi-mcp/mcp')
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONUNBUFFERED: '1'
+          PYTHONUTF8: '1'
+        startupTimeoutMs: 20000
+        failOnStartupError: false

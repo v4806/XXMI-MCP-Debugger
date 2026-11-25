@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "XXMI MCP Debugger",
+    "description": "Expose a running XXMI/3DMigoto instance as mcp__xxmi-debug__* tools for logs, frame analysis, live D3D11 probes, and config/shaders reload.",
+    "detail": "docs/DETAIL.md"
+  }
+}

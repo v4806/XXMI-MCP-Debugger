@@ -1,0 +1,35 @@
+{
+  "name": "dsh-xxmi-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connect the XXMI/3DMigoto MCP debug server (xxmi-debug, from v4806/XXMI-MCP-Debugger) to DSH as mcp__xxmi-debug__* tools.",
+  "author": "local DSH port of v4806/XXMI-MCP-Debugger",
+  "license": "GPL-3.0-only",
+  "homepage": "https://github.com/v4806/XXMI-MCP-Debugger",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/v4806/XXMI-MCP-Debugger.git"
+  },
+  "icon": "./icon.svg",
+  "exports": {
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale",
+    "docs",
+    "mcp",
+    "skills",
+    "README.md",
+    "LICENSE.GPL.txt",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
